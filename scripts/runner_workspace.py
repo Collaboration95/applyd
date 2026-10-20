@@ -4,6 +4,7 @@ from runner import Runner, Hooks, Queue, Kind, Verification
 import batches
 import settings
 import retry_policy
+import budgets
 
 
 def build_runner(root, run_id, brief_file, adapter=None):
@@ -49,7 +50,9 @@ def build_runner(root, run_id, brief_file, adapter=None):
             raise ValueError("runner_browser_claimed")
         if action.application_id:
             saved = record(action)
-            w.retry_guard(saved, now)
+            decision = retry_policy.check_retry(saved, now, budgets.retry_limit(root, saved))
+            if decision.decision != retry_policy.Decision.ELIGIBLE:
+                raise ValueError("retry_" + decision.decision.value)
             w.require_eligible(root, saved, now)
             resume = current_resume(saved, now)
             if action.kind in {Kind.REVIEW, Kind.SUBMIT}:

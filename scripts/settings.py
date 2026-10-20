@@ -12,6 +12,7 @@ import tempfile
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from outreach import DEFAULT_POLICY, OutreachError, validate_policy
+import budgets
 
 
 DEFAULTS = {
@@ -34,6 +35,7 @@ DEFAULTS = {
     "follow_up_days": 14,
     "computer_use": {"enabled": False, "step_budget": 6},
     "outreach": copy.deepcopy(DEFAULT_POLICY),
+    "work_budget": copy.deepcopy(budgets.DEFAULT_POLICY),
 }
 # Required fields of the original immutable schema-1 run snapshot. New optional
 # policy fields must not invalidate old snapshots or change their saved hashes.
@@ -143,6 +145,10 @@ def _validate(raw):
     if type(computer["step_budget"]) is not int or computer["step_budget"] < 0:
         _invalid("computer_use.step_budget", "a non-negative integer")
     result["computer_use"] = computer
+    try:
+        result["work_budget"] = budgets.validate_policy(result["work_budget"])
+    except ValueError as exc:
+        raise SettingsError(f"settings.json: {exc}") from exc
     if not isinstance(result["outreach"], dict):
         _invalid("outreach", "an object with enabled/business_days/daily_draft_cap/do_not_contact only")
     try:

@@ -30,6 +30,7 @@ unknown key, unsupported schema or invalid value raises `SettingsError`
 | `role_rules` | Private JSON object, default `{}`; interpreted by parent role-policy integration |
 | `computer_use` | Object with only `enabled` (boolean, default `false`) and `step_budget` (non-negative integer, default `6`); omitted nested values receive defaults. No null/unlimited budget; `0` permits no action. |
 | `outreach` | Object with only `enabled` (boolean, default `false`), `business_days` (non-negative integer, default `10`), `daily_draft_cap` (non-negative integer, default `3`) and `do_not_contact` (nonempty-string array, default `[]`). Partial objects receive defaults; null, unknown keys and boolean numbers fail. |
+| `work_budget` | Object with `max_actions` (non-negative integer, default `100`), `max_retries` (non-negative integer, default `3`), `provider_token_cap` (non-negative integer or `null`, default `null`), `provider_cost_cap` (non-negative finite number or `null`, default `null`). Partial objects receive defaults; unknown keys, null objects and boolean numbers fail. See [budgets.md](budgets.md) for durable reservations, measured usage and retry hooks. |
 
 The example contains every default and no personal facts. `browser`,
 `resume_scope`, and `role_rules` are preserved in snapshots; this module does not

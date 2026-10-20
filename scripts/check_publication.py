@@ -38,6 +38,7 @@ GENERIC_FILES = frozenset({
     "scripts/contacts.py", "docs/contacts.md",
     "scripts/computer_fallback.py", "docs/computer-use.md", "tests/fixtures/fallback-form.html",
     "scripts/runner.py", "scripts/runner_workspace.py", "docs/runner.md",
+    "scripts/budgets.py", "docs/budgets.md",
     "scripts/outreach.py", "scripts/outreach_workspace.py", "docs/outreach.md", ".claude/skills/outreach/SKILL.md",
     # Audited generic artifacts in the open read-only mail review branch.
     "scripts/gmail_sync.py", "scripts/mail_import.py", "docs/gmail-sync.md",

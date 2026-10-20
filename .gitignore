@@ -213,3 +213,9 @@ __pycache__/
 !/docs/budgets.md
 !/tests/test_budgets.py
 !/tests/test_budget_workspace.py
+
+# Generic semantic form adapter and non-submitting synthetic fixture.
+!/scripts/form_handlers.js
+!/docs/forms.md
+!/tests/forms.test.cjs
+!/tests/fixtures/application-form.html

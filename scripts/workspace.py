@@ -35,6 +35,7 @@ import cleanup
 import outcomes
 import batches
 import reviewer
+import mail_import
 import retry_policy
 import eligibility
 from export_recovery import after_mutation, recover, export_state, STATE_PATH as EXPORT_STATE_PATH
@@ -1032,6 +1033,8 @@ def main():
     change.add_argument("--add", type=Path)
     change.add_argument("--remove")
     contact.add_argument("--email-evidence", type=Path)
+    mail = commands.add_parser("mail-sync", help="Import a supplied read-only local mail export")
+    mail.add_argument("--file", type=Path)
     args = parser.parse_args()
     root = select_root(args.workspace)
     try:
@@ -1170,11 +1173,17 @@ def main():
                 result = contact_change(root, args.id, now, add=read(args.add) if args.add else None,
                                         remove=args.remove, email_text=args.email_evidence.read_text() if args.email_evidence else None,
                                         deferred=args.defer_export)
+            elif args.command == "mail-sync":
+                result = mail_import.sync_local(root, mail_import.read_export(args.file) if args.file else None, now)
+                if result["status"] == "synced":
+                    result = finish_mutation(root, result, args.defer_export)
             elif args.command == "review-form":
                 result = review_form(root, args.id, read(args.visible), now, args.defer_export)
             else:
                 result = {"export": recover(root, export_csv)}
         print(json.dumps(result, indent=2, ensure_ascii=False))
+        if args.command == "mail-sync" and result["status"] == "blocked":
+            parser.exit(2)
         if args.command == "export" and not result["export"]["ok"]:
             parser.exit(1)
     except safety.SafetyError as exc:

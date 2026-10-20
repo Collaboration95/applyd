@@ -182,3 +182,13 @@ __pycache__/
 !/tests/test_contacts_cli.py
 !/tests/test_contacts_integration.py
 !/tests/contacts.test.cjs
+
+# Generic read-only mail planner, local import and synthetic evidence fixtures.
+!/scripts/gmail_sync.py
+!/scripts/mail_import.py
+!/docs/gmail-sync.md
+!/tests/test_gmail_sync.py
+!/tests/test_mail_import.py
+!/.claude/skills/gmail-sync/
+/.claude/skills/gmail-sync/*
+!/.claude/skills/gmail-sync/SKILL.md

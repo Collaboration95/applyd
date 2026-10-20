@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Application run log</title>
+  <link rel="stylesheet" href="style.css">
+  <script defer src="data.js"></script>
+  <script defer src="runs.js"></script>
+  <script defer src="app.js"></script>
+</head>
+<body>
+  <main class="journal">
+    <header class="topbar">
+      <h1>Application runs</h1>
+      <button id="refresh" class="quiet-button" type="button">↻ Refresh</button>
+    </header>
+
+    <section class="applications" aria-labelledby="activity-title">
+      <div class="section-heading"><div><h2 id="activity-title">Run history</h2><p id="activity-subtitle">Newest first · a gap over one hour starts a new run.</p></div><label class="import-button" tabindex="0">Load JSON <span aria-hidden="true">↥</span><input id="import" type="file" accept=".json,application/json" multiple class="sr-only"></label></div>
+      <div class="filters"><label class="search"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search roles, companies or resumes…" aria-label="Search applications"></label><label class="sr-only" for="status">Filter by status</label><select id="status"><option value="">All statuses</option><option value="submitted">Applied</option><option value="ready">Ready</option><option value="awaiting_answer">Needs an answer</option><option value="submission_uncertain">Check submission</option><option value="interview">Interview</option><option value="rejected">Rejected</option><option value="preparing">Preparing</option><option value="discovered">Found</option><option value="failed">Failed</option><option value="skipped">Skipped</option><option value="withdrawn">Withdrawn</option></select></div>
+      <p id="error" class="error" role="alert" hidden></p>
+      <div id="runs" class="run-log"></div>
+      <div id="empty" class="empty" role="status"><h3 id="empty-title">No applications logged.</h3></div>
+      <div class="table-footer"><span id="result-count" aria-live="polite">0 runs · 0 applications</span><span>All times SGT</span></div>
+    </section>
+    <footer class="footer"><span id="updated">Waiting for application data</span></footer>
+  </main>
+
+  <dialog id="details"><div class="dialog-header"><span class="eyebrow">APPLICATION DETAILS</span><button id="close-details" class="icon-button" aria-label="Close details">×</button></div><h2 id="detail-title"></h2><p id="detail-company"></p><div id="detail-meta" class="detail-meta"></div><div id="detail-links" class="detail-links"></div><section><h3>Saved job description</h3><p id="detail-description" class="description"></p></section><section id="detail-notes-section"><h3>Notes</h3><p id="detail-notes" class="description"></p></section><section><h3>Activity log</h3><ul id="detail-events" class="event-list"></ul></section></dialog>
+</body>
+</html>

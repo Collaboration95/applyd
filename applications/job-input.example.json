@@ -1,0 +1,13 @@
+{
+  "company": "Example employer (template only)",
+  "role": "Software Engineer",
+  "location": "Singapore",
+  "platform": "linkedin",
+  "applied_by": null,
+  "platform_job_id": "0000000000",
+  "employer_requisition_id": null,
+  "listing_url": "https://www.linkedin.com/jobs/view/0000000000",
+  "application_url": "https://example.com/careers/example-role",
+  "job_description": "Replace this with the complete captured description before using capture. This example has not been logged as a real job.",
+  "notes": "Replace with job-specific fit notes and any sponsorship/experience requirements."
+}

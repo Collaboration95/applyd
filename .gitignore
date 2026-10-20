@@ -1,0 +1,33 @@
+# Publication boundary: deny every path, then allow audited generic code only.
+# Do not force-add files. Expand this allowlist only for audited generic code.
+# Private profiles, resumes (including filenames), applications, sources, exports,
+# local instructions (AGENTS.md), screenshots, credentials and temporary files stay untracked.
+/*
+!/.gitignore
+!/README.md
+!/CONTRIBUTING.md
+!/LICENSE
+!/master-plan.md
+!/scripts/
+!/tests/
+!/docs/
+!/roadmap/
+
+# Dashboard code only; data.js and data/ are generated from private records.
+!/dashboard/
+/dashboard/*
+!/dashboard/index.html
+!/dashboard/app.js
+!/dashboard/runs.js
+!/dashboard/style.css
+!/dashboard/README.md
+
+# Templates only; every real application record stays private.
+!/applications/
+/applications/*
+!/applications/job-input.example.json
+!/applications/TEMPLATE.md
+
+__pycache__/
+*.pyc
+.DS_Store

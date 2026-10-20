@@ -5,6 +5,7 @@ import json
 import argparse
 import os
 import tempfile
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -70,6 +71,8 @@ def export_dashboard(root=ROOT, snapshot=None):
             "description": description.read_text() if description else "",
             "notes": record.get("notes", ""), "events": events, "submissions": submissions,
             "contacts": record.get("contacts") or [],
+            "outreach": deepcopy(record.get("outreach") or []),
+            "outreach_blocker": deepcopy(record.get("outreach_blocker")),
             "outcome": record.get("outcome"), "latest_outcome_at": record.get("latest_outcome_at"),
             "follow_up_at": record.get("follow_up_at"),
             "prepared": {"at": prepared.get("prepared_at"), "resume": resume(prepared)} if prepared else None})

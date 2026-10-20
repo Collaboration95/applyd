@@ -123,6 +123,7 @@
     const links = [safeLink("Original listing ↗", app.job_url), safeLink("Application page ↗", app.application_url), safeLink("Saved record ↗", app.record_url)].filter(Boolean); $("detail-links").replaceChildren(...links);
     $("detail-description").textContent = app.description || "No saved job description.";
     renderContacts(app.contacts);
+    renderOutreach(app.outreach, app.outreach_blocker);
     $("detail-events").replaceChildren(...[...(app.events || [])].sort((a,b) => Date.parse(b.at) - Date.parse(a.at)).map((event) => { const li = el("li"); li.append(el("time", dateText(event.at)), el("span", LABELS[event.status] || event.status)); if (event.note) li.append(el("p", event.note)); return li; }));
     $("details").showModal();
   }
@@ -153,6 +154,47 @@
       item.append(facts); list.append(item);
     }
     section.append(list);
+  }
+  function outreachProfileLink(value) {
+    const link = contactProfileLink(value);
+    if (!link) return null;
+    const url = new URL(value), host = url.hostname.toLowerCase();
+    if ((host !== "linkedin.com" && !host.endsWith(".linkedin.com")) || !/^\/(in|pub)\/[^/]+(?:\/[^/]+)*\/?$/.test(url.pathname)) return null;
+    link.textContent = "LinkedIn profile ↗";
+    return link;
+  }
+  function renderOutreach(outreach, blocker) {
+    let section = $("detail-outreach");
+    if (!section) { section = el("section"); section.id = "detail-outreach"; $("details").append(section); }
+    section.replaceChildren(el("h3", "Outreach"));
+    if (typeof blocker?.reason === "string") section.append(el("p", `Blocked: ${blocker.reason}`));
+    const entries = Array.isArray(outreach) ? outreach.filter((e) => e && typeof e === "object" && !Array.isArray(e)) : [];
+    if (!entries.length) { section.append(el("p", "No saved outreach.")); return; }
+    const labels = { draft_created: "Email draft created · not sent", note_created: "LinkedIn note saved · not sent", draft_uncertain: "Draft uncertain · reconcile before retry", not_created: "Confirmed not created" };
+    for (const event of entries) {
+      const item = el("article"); item.append(el("p", labels[event.status] || "Outreach status unavailable"));
+      item.append(el("time", dateText(event.reserved_at)));
+      const text = typeof event.text === "string" ? event.text : "";
+      if (event.channel === "linkedin") {
+        // JavaScript string length counts UTF-16 units, matching the helper.
+        if (text && text.length <= 200) {
+          item.append(el("p", text, "outreach-note"));
+          if (event.status === "note_created") {
+            const copy = el("button", "Copy note", "small-button"); copy.type = "button";
+            copy.addEventListener("click", async () => { try { await navigator.clipboard.writeText(text); copy.textContent = "Copied"; } catch { copy.textContent = "Select and copy note"; } });
+            item.append(copy);
+          }
+        } else item.append(el("p", "Note unavailable or exceeds 200 UTF-16 units."));
+        const link = outreachProfileLink(event.profile_url); if (link) item.append(link);
+      } else if (event.channel === "email") {
+        if (typeof event.subject === "string") item.append(el("p", event.subject));
+        if (text) item.append(el("p", text));
+      }
+      for (const send of Array.isArray(event.manual_sends) ? event.manual_sends : []) {
+        if (send && typeof send === "object") item.append(el("p", `Manual send confirmed: ${dateText(send.occurred_at)} · recorded ${dateText(send.recorded_at)}`));
+      }
+      section.append(item);
+    }
   }
   function renderQuestions() {
     const inbox = state.data.inbox || { questions: [] }, questions = inbox.questions || [];

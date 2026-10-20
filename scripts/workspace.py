@@ -1081,6 +1081,25 @@ def main():
         runner_command.add_argument("--batch", type=Path, required=True)
         if command == "run":
             runner_command.add_argument("--steps", type=int, default=1)
+    outreach_command = commands.add_parser("outreach", help="Create one capped local note or use a supplied draft-only adapter")
+    outreach_command.add_argument("--run-id", required=True)
+    outreach_command.add_argument("--id", required=True)
+    outreach_command.add_argument("--contact-id", required=True)
+    outreach_command.add_argument("--channel", choices=("email", "linkedin"), required=True)
+    outreach_command.add_argument("--project-id", required=True)
+    outreach_command.add_argument("--bullet-id", required=True)
+    outreach_reconcile = commands.add_parser("outreach-reconcile")
+    outreach_reconcile.add_argument("--id", required=True)
+    outreach_reconcile.add_argument("--follow-up-id", required=True)
+    outreach_reconcile.add_argument("--resolution", choices=("draft_created", "note_created", "not_created"), required=True)
+    outreach_reconcile.add_argument("--evidence", type=Path, required=True)
+    outreach_reconcile.add_argument("--note", required=True)
+    outreach_reconcile.add_argument("--adapter-id")
+    outreach_sent = commands.add_parser("outreach-confirm-send", help="Record an already completed user-confirmed send; perform no send")
+    outreach_sent.add_argument("--id", required=True)
+    outreach_sent.add_argument("--follow-up-id", required=True)
+    outreach_sent.add_argument("--at", required=True)
+    outreach_sent.add_argument("--evidence", type=Path, required=True)
     args = parser.parse_args()
     root = select_root(args.workspace)
     try:
@@ -1233,11 +1252,22 @@ def main():
                                         deferred=args.defer_export)
             elif args.command == "computer-use":
                 result = fallback_session(root, args.id, args.run_id, args.session_id, read(args.plan), now)
+            elif args.command == "outreach":
+                from outreach_workspace import create_follow_up
+                result = create_follow_up(root, args.run_id, args.id, args.contact_id, args.channel, args.project_id, args.bullet_id, now, deferred=args.defer_export)
+            elif args.command == "outreach-reconcile":
+                from outreach_workspace import reconcile_follow_up
+                result = reconcile_follow_up(root, args.id, args.follow_up_id, now, resolution=args.resolution, evidence=args.evidence, note=args.note, adapter_id=args.adapter_id, deferred=args.defer_export)
+            elif args.command == "outreach-confirm-send":
+                from outreach_workspace import confirm_manual_send
+                result = confirm_manual_send(root, args.id, args.follow_up_id, occurred_at=args.at, recorded_at=now, evidence=args.evidence, deferred=args.defer_export)
             elif args.command == "review-form":
                 result = review_form(root, args.id, read(args.visible), now, args.defer_export)
             else:
                 result = {"export": recover(root, export_csv)}
         print(json.dumps(result, indent=2, ensure_ascii=False))
+        if args.command == "outreach" and result["status"] in {"blocked", "draft_uncertain"}:
+            parser.exit(2)
         if args.command == "computer-use" and result["outcome"] != "completed":
             parser.exit(2)
         if args.command == "export" and not result["export"]["ok"]:

@@ -196,3 +196,14 @@ __pycache__/
 !/docs/runner.md
 !/tests/test_runner.py
 !/tests/test_runner_workspace.py
+
+# Generic default-off outreach, checked source boundary and synthetic UI tests.
+!/scripts/outreach.py
+!/scripts/outreach_workspace.py
+!/docs/outreach.md
+!/tests/test_outreach.py
+!/tests/test_outreach_workspace.py
+!/tests/outreach.test.cjs
+!/.claude/skills/outreach/
+/.claude/skills/outreach/*
+!/.claude/skills/outreach/SKILL.md

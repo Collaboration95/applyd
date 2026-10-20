@@ -13,7 +13,7 @@ class SettingsIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             w.atomic_json(root / "settings.json", {"company_blocklist": ["Fictional"]})
-            result = w.capture(root, {"company": "Fictional Co", "role": "Engineer", "listing_url": "https://www.linkedin.com/jobs/view/555"}, datetime.now(timezone.utc))
+            result = w.capture(root, {"source": "linkedin_job_page", "company": "Fictional Co", "role": "Engineer", "listing_url": "https://www.linkedin.com/jobs/view/555"}, datetime.now(timezone.utc))
             self.assertEqual(result["status"], "skipped")
             self.assertEqual(result["reason"], "skipped:blocklist")
             self.assertEqual(w.records(root)[0]["stop_reason"], "skipped:blocklist")

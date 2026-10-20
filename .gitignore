@@ -99,3 +99,14 @@ __pycache__/
 !/tests/test_safety.py
 !/tests/safety.test.cjs
 !/docs/safety.md
+
+# Generic host guard and lean apply workflow; no private policy values.
+!/scripts/scope_guard.py
+!/tests/test_scope_guard.py
+!/.claude/
+/.claude/*
+!/.claude/skills/
+/.claude/skills/*
+!/.claude/skills/apply-linkedin/
+/.claude/skills/apply-linkedin/*
+!/.claude/skills/apply-linkedin/SKILL.md

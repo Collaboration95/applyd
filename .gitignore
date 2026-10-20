@@ -110,3 +110,8 @@ __pycache__/
 !/.claude/skills/apply-linkedin/
 /.claude/skills/apply-linkedin/*
 !/.claude/skills/apply-linkedin/SKILL.md
+
+# Generic fresh-workspace setup, diagnostics and synthetic tests.
+!/scripts/setup_workspace.py
+!/tests/test_setup_workspace.py
+!/docs/setup.md

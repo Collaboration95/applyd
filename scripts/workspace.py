@@ -35,6 +35,7 @@ import cleanup
 import outcomes
 import batches
 import reviewer
+import mail_import
 import reports
 import computer_fallback
 import retry_policy
@@ -1115,6 +1116,8 @@ def main():
     report.add_argument("--week", nargs="?", default="current", const="current", help="ISO week or Monday date; default current week")
     report.add_argument("--shareable", action="store_true", help="Remove private labels and blocker IDs")
     report.add_argument("--json", action="store_true")
+    mail = commands.add_parser("mail-sync", help="Import a supplied read-only local mail export")
+    mail.add_argument("--file", type=Path)
     args = parser.parse_args()
     root = select_root(args.workspace)
     try:
@@ -1285,6 +1288,10 @@ def main():
                     week = (now.date() - timedelta(days=now.weekday())).isoformat()
                 from metrics import load_events
                 result = reports.weekly_report(records(root), week, now=now, timezone=policy["timezone"], shareable=args.shareable, metrics=load_events(root))
+            elif args.command == "mail-sync":
+                result = mail_import.sync_local(root, mail_import.read_export(args.file) if args.file else None, now)
+                if result["status"] == "synced":
+                    result = finish_mutation(root, result, args.defer_export)
             elif args.command == "review-form":
                 result = review_form(root, args.id, read(args.visible), now, args.defer_export)
             else:
@@ -1294,6 +1301,8 @@ def main():
         else:
             print(json.dumps(result, indent=2, ensure_ascii=False))
         if args.command == "outreach" and result["status"] in {"blocked", "draft_uncertain"}:
+            parser.exit(2)
+        if args.command == "mail-sync" and result["status"] == "blocked":
             parser.exit(2)
         if args.command == "computer-use" and result["outcome"] != "completed":
             parser.exit(2)

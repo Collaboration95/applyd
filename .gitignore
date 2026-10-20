@@ -248,3 +248,14 @@ __pycache__/
 !/.claude/skills/cleanup-run/SKILL.md
 !/docs/batch.example.json
 !/docs/lean-workflows.md
+
+# Audited generic additions retained from this blocked draft.
+# Generic read-only mail planner, local import and synthetic evidence fixtures.
+!/scripts/gmail_sync.py
+!/scripts/mail_import.py
+!/docs/gmail-sync.md
+!/tests/test_gmail_sync.py
+!/tests/test_mail_import.py
+!/.claude/skills/gmail-sync/
+/.claude/skills/gmail-sync/*
+!/.claude/skills/gmail-sync/SKILL.md

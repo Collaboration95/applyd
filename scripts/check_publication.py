@@ -21,7 +21,7 @@ import zlib
 GENERIC_FILES = frozenset({
     ".gitignore", "README.md", "CONTRIBUTING.md", "LICENSE", "master-plan.md",
     "scripts/workspace.py", "scripts/resolve_resume.py", "scripts/import_pdf.py",
-    "scripts/export_dashboard.py", "scripts/check_publication.py", "scripts/workspace_config.py", "scripts/workspace_config.py",
+    "scripts/export_dashboard.py", "scripts/check_publication.py", "scripts/workspace_config.py", "scripts/seen_index.py", "scripts/seen.sh",
     "dashboard/index.html", "dashboard/app.js", "dashboard/runs.js",
     "dashboard/style.css", "dashboard/README.md",
     "applications/job-input.example.json", "applications/TEMPLATE.md",
@@ -100,7 +100,8 @@ class Scanner:
         for item in values if contacts else ():
             for match in EMAIL.finditer(item):
                 domain = match[1].lower()
-                if not (domain in {"example.com", "example.org", "example.net"}
+                if not (match[0].lower() == "applyd@users.noreply.github.com"
+                        or domain in {"example.com", "example.org", "example.net"}
                         or domain.endswith((".example", ".invalid", ".test"))):
                     self.findings["contact_value"] += 1
 

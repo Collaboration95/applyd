@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'">
+<title>Synthetic computer-use fixture</title>
+<style>
+  :root { color-scheme: light; font-family: system-ui, sans-serif; color: #17212e; background: #f1f4f7; }
+  body { max-width: 46rem; margin: 2rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.5rem; } h2 { font-size: 1.1rem; margin-top: 0; }
+  section { background: white; border: 1px solid #c3cbd4; border-radius: .5rem; padding: 1.2rem; margin: 1rem 0; }
+  button { font: inherit; padding: .65rem 1rem; margin: .25rem; border: 1px solid #64748b; background: white; border-radius: .3rem; cursor: pointer; }
+  button[aria-checked="true"] { color: white; background: #234e80; }
+  :focus-visible { outline: 3px solid #c66500; outline-offset: 3px; }
+  output { display: block; margin-top: .75rem; min-height: 1.5rem; overflow-wrap: anywhere; }
+  canvas { display: block; max-width: 100%; height: auto; border: 1px solid #64748b; cursor: pointer; }
+  p { line-height: 1.5; }
+</style>
+<body>
+  <h1>Synthetic computer-use fixture</h1>
+  <p>Local controls only. This page has no submission or network operations. Use a synthetic PDF for file selection.</p>
+
+  <section aria-labelledby="widget-heading">
+    <h2 id="widget-heading">Custom widget</h2>
+    <div id="fixture-language" role="radiogroup" aria-label="Fixture language">
+      <button type="button" role="radio" aria-checked="false" data-value="Python">Python</button>
+      <button type="button" role="radio" aria-checked="false" data-value="JavaScript">JavaScript</button>
+      <button type="button" role="radio" aria-checked="false" data-value="Other">Other</button>
+    </div>
+    <output id="widget-result" aria-live="polite">Selected option: none</output>
+  </section>
+
+  <section aria-labelledby="canvas-heading">
+    <h2 id="canvas-heading">Canvas widget</h2>
+    <p>Choose 1, 2 or 3. Arrow keys change the selected value when the canvas has focus.</p>
+    <canvas id="fixture-canvas" width="480" height="100" tabindex="0" role="slider"
+      aria-label="Fixture canvas value" aria-valuemin="1" aria-valuemax="3" aria-valuenow="1">
+      Fixture canvas value: 1 to 3
+    </canvas>
+    <output id="canvas-result" aria-live="polite">Canvas value: 1</output>
+  </section>
+
+  <section aria-labelledby="upload-heading">
+    <h2 id="upload-heading">Native file picker</h2>
+    <label for="fixture-upload">Synthetic PDF</label>
+    <input id="fixture-upload" type="file" accept=".pdf,application/pdf">
+    <output id="file-result" aria-live="polite">Selected file: none</output>
+  </section>
+
+  <script>
+    'use strict';
+    const widget = document.getElementById('fixture-language');
+    widget.addEventListener('click', event => {
+      const button = event.target.closest('button[data-value]');
+      if (!button || !widget.contains(button)) return;
+      for (const option of widget.querySelectorAll('button')) {
+        option.setAttribute('aria-checked', String(option === button));
+      }
+      document.getElementById('widget-result').textContent = 'Selected option: ' + button.dataset.value;
+    });
+
+    const canvas = document.getElementById('fixture-canvas');
+    const context = canvas.getContext('2d');
+    let selected = 1;
+    function draw(value) {
+      selected = Math.max(1, Math.min(3, value));
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      for (let index = 0; index < 3; index++) {
+        context.fillStyle = index + 1 === selected ? '#234e80' : '#e8edf3';
+        context.fillRect(index * 160 + 4, 4, 152, 92);
+        context.fillStyle = index + 1 === selected ? '#ffffff' : '#17212e';
+        context.font = '28px system-ui';
+        context.textAlign = 'center';
+        context.fillText(String(index + 1), index * 160 + 80, 60);
+      }
+      canvas.setAttribute('aria-valuenow', String(selected));
+      document.getElementById('canvas-result').textContent = 'Canvas value: ' + selected;
+    }
+    canvas.addEventListener('pointerdown', event => {
+      const bounds = canvas.getBoundingClientRect();
+      draw(Math.floor((event.clientX - bounds.left) / bounds.width * 3) + 1);
+      canvas.focus();
+    });
+    canvas.addEventListener('keydown', event => {
+      if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
+      event.preventDefault();
+      draw(selected + (['ArrowRight', 'ArrowUp'].includes(event.key) ? 1 : -1));
+    });
+    document.getElementById('fixture-upload').addEventListener('change', event => {
+      const file = event.target.files[0];
+      document.getElementById('file-result').textContent = 'Selected file: ' + (file ? file.name : 'none');
+    });
+    draw(1);
+  </script>
+</body>
+</html>

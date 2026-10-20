@@ -28,6 +28,9 @@ unknown key, unsupported schema or invalid value raises `SettingsError`
 | `follow_up_days` | Non-negative days, default `14`, for response/follow-up attention |
 | `browser`, `resume_scope` | Optional non-empty private strings, default `null` |
 | `role_rules` | Private JSON object, default `{}`; interpreted by parent role-policy integration |
+| `computer_use` | Object with only `enabled` (boolean, default `false`) and `step_budget` (non-negative integer, default `6`); omitted nested values receive defaults. No null/unlimited budget; `0` permits no action. |
+| `outreach` | Object with only `enabled` (boolean, default `false`), `business_days` (non-negative integer, default `10`), `daily_draft_cap` (non-negative integer, default `3`) and `do_not_contact` (nonempty-string array, default `[]`). Partial objects receive defaults; null, unknown keys and boolean numbers fail. |
+| `work_budget` | Object with `max_actions` (non-negative integer, default `100`), `max_retries` (non-negative integer, default `3`), `provider_token_cap` (non-negative integer or `null`, default `null`), `provider_cost_cap` (non-negative finite number or `null`, default `null`). Partial objects receive defaults; unknown keys, null objects and boolean numbers fail. See [budgets.md](budgets.md) for durable reservations, measured usage and retry hooks. |
 
 The example contains every default and no personal facts. `browser`,
 `resume_scope`, and `role_rules` are preserved in snapshots; this module does not
@@ -102,3 +105,22 @@ Verification: `python3 -m unittest discover -s tests -p test_settings.py -v`.
 The parent owns CLI glue and the publication allowlist for `settings.example.json`.
 
 Immutable schema-1 run hashes are verified against their exact saved settings. Newly introduced optional defaults do not rewrite or invalidate older run snapshots; original required policy fields remain mandatory.
+
+Computer-use fallback uses `computer_fallback.run_workspace_session` to intersect
+current and verified frozen settings at each adapter boundary. Both must enable
+fallback and explicitly allow the exact pinned origin's host; deny wins, the
+smaller budget applies, and either deadline or Easy Apply restriction blocks use.
+Old snapshots without `computer_use` remain disabled. This does not change the
+ordinary external-host rule: fallback alone requires a non-empty explicit allow.
+The required live guard and adapter contract are in [computer-use.md](computer-use.md).
+`validate_settings(raw)` exposes the same strict, default-filling validation as
+`load_settings(root)` without filesystem access.
+
+Outreach uses `outreach_workspace.create_follow_up` inside the workspace writer
+lock and requires a dedicated existing run from `run-start`. Both current and
+frozen policies must enable outreach and use `apply` mode. The longer business-day
+wait, smaller draft cap and combined do-not-contact entries apply; both timezones'
+daily boundaries and both deadlines are checked. Old snapshots without outreach
+stay disabled without rewriting their bytes or hashes. Outreach reservations carry
+their own run ID; historical application/submission run IDs stay unchanged.
+See [outreach.md](outreach.md) for file/provenance checks and command hooks.

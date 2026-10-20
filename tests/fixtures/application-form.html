@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'">
+  <title>Synthetic application fields</title>
+  <style>
+    body { font: 16px system-ui, sans-serif; margin: 24px auto; padding: 0 16px; max-width: 680px; }
+    section, fieldset { border: 1px solid #888; padding: 16px; margin: 16px 0; }
+    label { display: block; margin: 12px 0 4px; }
+    input:not([type="radio"]):not([type="checkbox"]), select, textarea { width: 100%; box-sizing: border-box; padding: 8px; }
+    output { display: block; white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <h1>Synthetic application fields</h1>
+  <p>Fictional facts only. File selection stays local. No submission controls.</p>
+  <label><input type="checkbox" id="changed-layout"> Changed layout case</label>
+  <section role="dialog" aria-label="Synthetic Easy Apply" id="application-dialog">
+    <label for="full-name">Full name</label>
+    <input id="full-name" type="text" required>
+    <label for="years-python">Years of Python experience</label>
+    <input id="years-python" type="number" min="0" max="60" step="1" required>
+    <label for="work-category">Singapore right-to-work category</label>
+    <select id="work-category" required>
+      <option value="citizen">Citizen</option>
+      <option value="pr">Permanent Resident</option>
+      <option value="foreigner">Foreigner</option>
+    </select>
+    <fieldset id="sponsorship">
+      <legend>Require sponsorship?</legend>
+      <label for="sponsorship-yes">Yes</label>
+      <input id="sponsorship-yes" type="radio" name="sponsorship" value="yes" required>
+      <label for="sponsorship-no">No</label>
+      <input id="sponsorship-no" type="radio" name="sponsorship" value="no" required>
+    </fieldset>
+    <label for="background-check">Willing to undergo an ordinary background check?</label>
+    <input id="background-check" type="checkbox" required>
+    <label for="resume">Resume</label>
+    <input id="resume" type="file" accept="application/pdf,.pdf" required>
+    <fieldset id="work-history">
+      <legend>Work history</legend>
+      <label for="history-company">Employer</label>
+      <input id="history-company" type="text" required>
+      <label for="history-start">Start date</label>
+      <input id="history-start" type="text" required>
+      <label for="history-end">End date</label>
+      <input id="history-end" type="text" required>
+    </fieldset>
+    <div id="extra-fields"></div>
+  </section>
+  <output id="observed" aria-live="polite">Change a field to inspect actual local values.</output>
+  <script>
+    'use strict';
+    const dialog = document.getElementById('application-dialog');
+    function showValues() {
+      const values = {};
+      for (const element of dialog.querySelectorAll('input, select')) {
+        values[element.id] = element.type === 'file' ? Array.from(element.files, file => ({name: file.name, size: file.size})) :
+          ['radio', 'checkbox'].includes(element.type) ? element.checked : element.value;
+      }
+      document.getElementById('observed').textContent = JSON.stringify(values, null, 2);
+    }
+    dialog.addEventListener('input', showValues);
+    dialog.addEventListener('change', showValues);
+    document.getElementById('changed-layout').addEventListener('change', event => {
+      const container = document.getElementById('extra-fields');
+      container.replaceChildren();
+      const select = document.getElementById('work-category');
+      const previous = document.getElementById('new-option');
+      if (previous) previous.remove();
+      if (event.target.checked) {
+        const label = document.createElement('label');
+        label.htmlFor = 'unknown-qualification'; label.textContent = 'Unknown qualification';
+        const input = document.createElement('input');
+        input.id = 'unknown-qualification'; input.required = true;
+        container.append(label, input);
+        const option = document.createElement('option');
+        option.id = 'new-option'; option.value = 'unrecognized'; option.textContent = 'Unrecognized category';
+        select.append(option);
+      }
+      showValues();
+    });
+  </script>
+</body>
+</html>

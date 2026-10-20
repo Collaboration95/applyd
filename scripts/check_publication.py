@@ -20,6 +20,7 @@ import zlib
 # .gitignore. In particular, an allowed directory is never a recursive grant.
 GENERIC_FILES = frozenset({
     ".gitignore", "README.md", "CONTRIBUTING.md", "LICENSE", "master-plan.md",
+    ".github/workflows/regression.yml", "docs/release.md",
     "scripts/workspace.py", "scripts/resolve_resume.py", "scripts/import_pdf.py",
     "scripts/export_dashboard.py", "scripts/check_publication.py", "scripts/workspace_config.py", "scripts/seen_index.py", "scripts/seen.sh",
     "scripts/settings.py", "settings.example.json", "docs/settings.md",
@@ -36,6 +37,13 @@ GENERIC_FILES = frozenset({
     "scripts/retry_policy.py", "docs/retries.md",
     "scripts/eligibility.py", "docs/eligibility.md",
     "scripts/contacts.py", "docs/contacts.md",
+    "scripts/computer_fallback.py", "docs/computer-use.md", "tests/fixtures/fallback-form.html",
+    "scripts/runner.py", "scripts/runner_workspace.py", "docs/runner.md",
+    "scripts/budgets.py", "docs/budgets.md",
+    "scripts/metrics.py", "scripts/reports.py", "docs/metrics.md", "docs/reports.md",
+    "scripts/form_handlers.js", "docs/forms.md", "tests/fixtures/application-form.html",
+    "scripts/outreach.py", "scripts/outreach_workspace.py", "docs/outreach.md", ".claude/skills/outreach/SKILL.md",
+    # Audited generic artifacts in the open read-only mail review branch.
     "scripts/gmail_sync.py", "scripts/mail_import.py", "docs/gmail-sync.md",
     ".claude/skills/gmail-sync/SKILL.md",
     "scripts/demo.py", "scripts/demo_gif.py", "scripts/screenshots.sh", "docs/demo.md",

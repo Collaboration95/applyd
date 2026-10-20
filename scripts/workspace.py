@@ -36,6 +36,8 @@ import outcomes
 import batches
 import reviewer
 import mail_import
+import reports
+import computer_fallback
 import retry_policy
 import eligibility
 from export_recovery import after_mutation, recover, export_state, STATE_PATH as EXPORT_STATE_PATH
@@ -272,8 +274,15 @@ def work_guard(root, run_id, now, command):
         browser_retry_guard(root, now)
 
 
-def retry_guard(record, now):
-    decision = retry_policy.check_retry(record, now, MAX_RETRIES)
+def retry_limit(root, record):
+    if root is None:
+        return MAX_RETRIES  # Compatibility for standalone pure-policy callers.
+    from budgets import retry_limit as configured_retry_limit
+    return configured_retry_limit(root, record)
+
+
+def retry_guard(record, now, root=None):
+    decision = retry_policy.check_retry(record, now, retry_limit(root, record))
     if decision.decision == retry_policy.Decision.CONFIRMED:
         raise ValueError("Confirmed application cannot retry")
     if decision.decision == retry_policy.Decision.WAITING_ANSWER:
@@ -306,6 +315,8 @@ def browser_retry_stops(root, now):
         # Validate even an exhausted/uncertain record; malformed state must not
         # silently release a browser stop. The separate incident survives later
         # confirmation/reconciliation and replacement of the retry blocker.
+        # Structural stop validation must not require an old closed run's
+        # settings file. Actual work/retry boundaries use configured limits.
         retry_policy.check_retry(record, now, MAX_RETRIES)
         incident = record.get("browser_stop", record.get("blocker"))
         if incident is None:
@@ -354,10 +365,10 @@ def save_retry_record(root, record, result, deferred=False):
 
 def retry_status(root, application_id, now):
     record = read(root / "applications/records" / slug(application_id) / "record.json")
-    return {"application_id": application_id, **retry_policy.check_retry(record, now, MAX_RETRIES).as_dict(),
+    return {"application_id": application_id, **retry_policy.check_retry(record, now, retry_limit(root, record)).as_dict(),
             "blocker_id": (record.get("blocker") or {}).get("id"),
             "retry_counts": record.get("retry_counts", {}),
-            "retry_budget": min(MAX_RETRIES, record.get("retry_budget", MAX_RETRIES)),
+            "retry_budget": min(retry_limit(root, record), record.get("retry_budget", retry_limit(root, record))),
             "blocked_on_answer_ids": record.get("blocked_on_answer_ids", []),
             "browser_stops": browser_retry_stops(root, now)}
 
@@ -371,8 +382,8 @@ def retry_failure(root, application_id, reason, now, deferred=False, *, event_de
     record = read(path)
     if "browser_stop" in record:
         validate_browser_incident(record["browser_stop"], now)
-    updated = retry_policy.next_retry_state(preserve_browser_incident(record), reason, now, MAX_RETRIES)
-    confirmed = retry_policy.check_retry(updated, now, MAX_RETRIES).decision == retry_policy.Decision.CONFIRMED
+    updated = retry_policy.next_retry_state(preserve_browser_incident(record), reason, now, retry_limit(root, record))
+    confirmed = retry_policy.check_retry(updated, now, retry_limit(root, record)).decision == retry_policy.Decision.CONFIRMED
     if confirmed and reason not in {retry_policy.Reason.LOGIN, retry_policy.Reason.PAGE_CHANGED,
                                     retry_policy.Reason.ACCOUNT_SAFETY, retry_policy.Reason.MANUAL_STOP}:
         return finish_mutation(root, {"application_id": application_id, "decision": "confirmed",
@@ -398,7 +409,7 @@ def retry_failure(root, application_id, reason, now, deferred=False, *, event_de
                 current = {"id": "browser-" + uuid4().hex,
                            "reason": reason.value, "blocked_at": now.isoformat(), "answer_ids": [], "resume": None}
         updated["browser_stop"] = json.loads(json.dumps(current))
-    decision = retry_policy.check_retry(updated, now, MAX_RETRIES)
+    decision = retry_policy.check_retry(updated, now, retry_limit(root, record))
     if updated == record:
         return finish_mutation(root, {"application_id": application_id, **decision.as_dict(),
                                       "already_recorded": True}, deferred, repeated=True)
@@ -415,7 +426,7 @@ def retry_failure(root, application_id, reason, now, deferred=False, *, event_de
 def retry_resume(root, application_id, blocker_id, evidence_path, now, deferred=False):
     directory = root / "applications/records" / slug(application_id)
     record = read(directory / "record.json")
-    decision = retry_policy.check_retry(record, now, MAX_RETRIES)
+    decision = retry_policy.check_retry(record, now, retry_limit(root, record))
     incident = record.get("browser_stop", record.get("blocker"))
     if (not isinstance(incident, dict) or incident.get("id") != blocker_id or incident.get("reason") not in {"login", "page_changed"}
             or incident.get("resume") is not None):
@@ -452,7 +463,7 @@ def retry_resume(root, application_id, blocker_id, evidence_path, now, deferred=
             if os.path.exists(temporary):
                 os.unlink(temporary)
     if decision.decision == retry_policy.Decision.RESUME_REQUIRED and (record.get("blocker") or {}).get("id") == blocker_id:
-        record = retry_policy.resume_retry(record, blocker_id, evidence_id, now, MAX_RETRIES)
+        record = retry_policy.resume_retry(record, blocker_id, evidence_id, now, retry_limit(root, record))
     # Clearing a session incident after confirmation/uncertainty/exhaustion
     # permits independent jobs only. The application's retry gate still denies
     # work, and neither its budget nor its uncertainty blocker is removed.
@@ -462,7 +473,7 @@ def retry_resume(root, application_id, blocker_id, evidence_path, now, deferred=
                               "retry_blocker_id": blocker_id, "evidence": evidence})
     return save_retry_record(root, record, {"application_id": application_id, "blocker_id": blocker_id,
                                            "browser_resumed": True,
-                                           "decision": retry_policy.check_retry(record, now, MAX_RETRIES).decision}, deferred)
+                                           "decision": retry_policy.check_retry(record, now, retry_limit(root, record)).decision}, deferred)
 
 
 def check_scope(root, record, url, now):
@@ -471,7 +482,7 @@ def check_scope(root, record, url, now):
         policies.append(settings.load_run(root, record["run_id"])["settings"])
     if all(scope_guard.allowed(url, policy) for policy in policies):
         return {"allowed": True}
-    updated = retry_policy.next_retry_state(record, "off_scope", now, MAX_RETRIES)
+    updated = retry_policy.next_retry_state(record, "off_scope", now, retry_limit(root, record))
     record.update(updated)
     record.update(stop_reason="off_scope", off_scope_url=url, status_updated_at=now.isoformat())
     if not record.get("submissions") and record["status"] != "submission_uncertain":
@@ -510,8 +521,8 @@ def preflight(root, record, now):
     work_guard(root, record.get("run_id"), now, "preflight")
     if record.get("application_id"):
         # A stale in-memory ready snapshot must not bypass a newer durable wait.
-        retry_guard(read(root / "applications/records" / slug(record["application_id"]) / "record.json"), now)
-    retry_guard(record, now)
+        retry_guard(read(root / "applications/records" / slug(record["application_id"]) / "record.json"), now, root=root)
+    retry_guard(record, now, root=root)
     if record["status"] != "ready":
         raise ValueError("Only a ready application may pass submission preflight")
     prepared = record.get("prepared")
@@ -551,6 +562,8 @@ def begin_submit(root, application_id, observed_url, session_id, now, deferred=F
     if canonical_url(observed_url) != record["canonical_listing_url"]:
         raise ValueError("observed_job_mismatch: browser job differs from the prepared application")
     preflight(root, record, now)
+    if (root / "applications/computer-use.lock").exists():
+        raise ValueError("browser_claimed: computer-use writer is active; reconcile before Submit")
     keys = set(seen_index.identity_keys(record, canonical_url(record["listing_url"])))
     for other in records(root):
         if other.get("submissions") and keys.intersection(seen_index.identity_keys(other, canonical_url(other["listing_url"]))):
@@ -569,7 +582,10 @@ def begin_submit(root, application_id, observed_url, session_id, now, deferred=F
         json.dump(claim, stream, sort_keys=True)
         stream.flush()
         os.fsync(stream.fileno())
-    record = retry_policy.next_retry_state(record, "submission_uncertain", now, MAX_RETRIES)
+    record = retry_policy.next_retry_state(record, "submission_uncertain", now, retry_limit(root, record))
+    if (root / "applications/computer-use.lock").exists():
+        # Keep the reserved claim: recovery must reconcile the interrupted intent.
+        raise ValueError("browser_claimed: computer-use writer raced with Submit; reconcile the saved claim")
     record.update(status="submission_uncertain", status_updated_at=now.isoformat(), submission_intent=claim)
     record["events"].append({"at": now.isoformat(), "status": "submission_uncertain", "reason": "submit_intent", "attempt_id": attempt_id})
     persist_record(root, record)
@@ -589,7 +605,7 @@ def recover_submit(root, now):
         path.unlink()
         return {"recovered": True, "application_id": claim["application_id"], "requires_reconciliation": False}
     else:
-        record = retry_policy.next_retry_state(preserve_browser_incident(record), "submission_uncertain", now, MAX_RETRIES)
+        record = retry_policy.next_retry_state(preserve_browser_incident(record), "submission_uncertain", now, retry_limit(root, record))
         record.update(status="submission_uncertain", status_updated_at=now.isoformat(), submission_intent=claim)
         if not any(e.get("attempt_id") == claim["attempt_id"] for e in record["events"]):
             record["events"].append({"at": now.isoformat(), "status": "submission_uncertain", "reason": "recovered_intent", "attempt_id": claim["attempt_id"]})
@@ -645,13 +661,13 @@ def prepare_answers(root, application_id, questions, now, deferred=False):
     path = root / "applications/records" / slug(application_id) / "record.json"
     record = read(path)
     work_guard(root, record.get("run_id"), now, "prepare-answers")
-    retry_guard(record, now)
+    retry_guard(record, now, root=root)
     if record.get("submissions") or record["status"] in {"submitted", "submission_uncertain"}:
         raise ValueError("Cannot prepare answers for a confirmed or uncertain submission")
     require_eligible(root, record, now)
     prepared = answer_core.prepare_answers(root, record, questions, now)
     if not prepared["ready"]:
-        record = retry_policy.next_retry_state(record, "unknown_answer", now, MAX_RETRIES,
+        record = retry_policy.next_retry_state(record, "unknown_answer", now, retry_limit(root, record),
                                                blocked_answer_ids=prepared["blocked_on_answer_ids"])
     record.update(status=prepared["status"], status_updated_at=now.isoformat(),
                   blocked_on_answer_ids=prepared["blocked_on_answer_ids"],
@@ -677,11 +693,11 @@ def requeue_answers(root, now):
         # The resolver retains missing/unrepresented IDs and returns actual
         # unresolved IDs. Only its confirmed difference may release a blocker.
         resolved = set(record.get("blocked_on_answer_ids", [])) - set(update["blocked_on_answer_ids"])
-        updated = retry_policy.resolve_answer_blocker(record, resolved, now, MAX_RETRIES)
+        updated = retry_policy.resolve_answer_blocker(record, resolved, now, retry_limit(root, record))
         if update["blocked_on_answer_ids"]:
-            updated = retry_policy.next_retry_state(updated, "unknown_answer", now, MAX_RETRIES,
+            updated = retry_policy.next_retry_state(updated, "unknown_answer", now, retry_limit(root, record),
                                                      blocked_answer_ids=update["blocked_on_answer_ids"])
-        decision = retry_policy.check_retry(updated, now, MAX_RETRIES)
+        decision = retry_policy.check_retry(updated, now, retry_limit(root, record))
         reasons = list(update.get("reasons", []))
         if decision.decision != retry_policy.Decision.ELIGIBLE:
             reasons.append("retry_" + decision.decision.value)
@@ -705,7 +721,7 @@ def review_form(root, application_id, visible, now, deferred=False):
     path = root / "applications/records" / slug(application_id) / "record.json"
     record = read(path)
     work_guard(root, record.get("run_id"), now, "review-form")
-    retry_guard(record, now)
+    retry_guard(record, now, root=root)
     if record["status"] != "ready" or record.get("submission_intent") or record.get("submissions"):
         raise ValueError("Form review requires one ready, unsubmitted attempt")
     prepared = record["prepared"]
@@ -761,10 +777,10 @@ def event(root, args, now, deferred=False):
     if status in {"preparing", "ready"}:
         require_eligible(root, record, now)
         work_guard(root, record.get("run_id"), now, "event")
-        if status == "preparing" and retry_policy.check_retry(record, now, MAX_RETRIES).decision == retry_policy.Decision.WAITING_ANSWER:
+        if status == "preparing" and retry_policy.check_retry(record, now, retry_limit(root, record)).decision == retry_policy.Decision.WAITING_ANSWER:
             return finish_mutation(root, {"application_id": args.id, "status": record["status"],
                                           "decision": "waiting_answer", "already_recorded": True}, deferred, repeated=True)
-        retry_guard(record, now)
+        retry_guard(record, now, root=root)
     uncertain = (record["status"] == "submission_uncertain" or record.get("submission_intent") is not None
                  or record.get("stop_reason") == "submission_uncertain"
                  or (record.get("blocker") or {}).get("reason") == "submission_uncertain")
@@ -840,7 +856,7 @@ def event(root, args, now, deferred=False):
         shutil.copy2(args.evidence, evidence)
         details.update(reconciliation_path=str(evidence.relative_to(root)), reconciliation_sha256=digest(evidence))
     if status == "submission_uncertain":
-        record = retry_policy.next_retry_state(preserve_browser_incident(record), "submission_uncertain", now, MAX_RETRIES)
+        record = retry_policy.next_retry_state(preserve_browser_incident(record), "submission_uncertain", now, retry_limit(root, record))
     if details.get("confirmation_path") or details.get("reconciliation_path"):
         # Clear uncertainty only in this evidence-backed reconciliation path.
         # Counts, budget and independent browser incidents remain untouched.
@@ -899,6 +915,38 @@ def contact_change(root, application_id, now, *, add=None, remove=None, email_te
         updated = contacts.remove_contact(record, remove)
     persist_record(root, updated)
     return finish_mutation(root, {"application_id": application_id, "contacts": updated.get("contacts", [])}, deferred)
+
+
+def fallback_session(root, application_id, run_id, session_id, plan, now, adapter=None, clock=None):
+    clock = clock or (lambda: datetime.now(ZoneInfo(settings.load_settings(root)["timezone"])))
+    def guard(phase):
+        current = clock()
+        record = read(root / "applications/records" / slug(application_id) / "record.json")
+        if record.get("run_id") != run_id or record.get("source") != "linkedin_job_page":
+            raise ValueError("fallback_run_or_source_mismatch")
+        work_guard(root, run_id, current, "computer-use")
+        retry_guard(record, current, root=root)
+        require_eligible(root, record, current)
+        settings.check_submission(root, {**record, "status": "ready"}, current)
+        check_scope(root, record, plan["initial_url"], current)
+        prepared = record.get("answer_preparation") or {}
+        if not prepared.get("answers_path") or not answer_core.validate_snapshot(root, record, read(root / prepared["answers_path"]), current)["valid"]:
+            raise ValueError("answer_validation")
+        return True
+    def current_resume():
+        record = read(root / "applications/records" / slug(application_id) / "record.json")
+        scope = record.get("prepared", {}).get("scope") or settings.load_settings(root)["resume_scope"]
+        return Path(resolve(read(root / "resumes/registry.json"), scope, "application", clock(), root)["path"])
+    try:
+        actions = [computer_fallback.Action(**value) for value in plan["actions"]]
+        result = computer_fallback.run_workspace_session(root, run_id, session_id, guard=guard,
+            adapter=adapter, clock=clock, initial_tab_id=plan["initial_tab_id"], initial_url=plan["initial_url"],
+            failure_kind=plan["failure_kind"], dom_failed=plan.get("dom_failed") is True,
+            actions=actions, resume_resolver=current_resume)
+        return {"outcome": result.outcome.value, "reason": result.reason,
+                "step_count": result.step_count, "record_ref": result.record_ref}
+    except (ValueError, KeyError, TypeError, OSError):
+        return {"outcome": "failed", "reason": "fallback_storage_or_input_blocker", "step_count": None, "record_ref": None}
 
 
 def import_settings(root, change, deferred=False):
@@ -976,6 +1024,7 @@ def main():
     browser_check.add_argument("--id", help="Also require this application's retry eligibility")
     commands.add_parser("export")
     commands.add_parser("reindex")
+    commands.add_parser("metrics", help="Print measured aggregate effort without source identifiers")
     run = commands.add_parser("run-start")
     run.add_argument("--id", required=True)
     screen = commands.add_parser("screen", help="Check a result-card header before extraction or navigation")
@@ -1033,6 +1082,40 @@ def main():
     change.add_argument("--add", type=Path)
     change.add_argument("--remove")
     contact.add_argument("--email-evidence", type=Path)
+    fallback = commands.add_parser("computer-use", help="Validate a bounded fallback plan; an adapter is required to execute")
+    fallback.add_argument("--id", required=True)
+    fallback.add_argument("--run-id", required=True)
+    fallback.add_argument("--session-id", required=True)
+    fallback.add_argument("--plan", type=Path, required=True)
+    for command in ("next-action", "run"):
+        runner_command = commands.add_parser(command, help="Plan or execute bounded durable actions through an adapter")
+        runner_command.add_argument("--run-id", required=True)
+        runner_command.add_argument("--batch", type=Path, required=True)
+        if command == "run":
+            runner_command.add_argument("--steps", type=int, default=1)
+    outreach_command = commands.add_parser("outreach", help="Create one capped local note or use a supplied draft-only adapter")
+    outreach_command.add_argument("--run-id", required=True)
+    outreach_command.add_argument("--id", required=True)
+    outreach_command.add_argument("--contact-id", required=True)
+    outreach_command.add_argument("--channel", choices=("email", "linkedin"), required=True)
+    outreach_command.add_argument("--project-id", required=True)
+    outreach_command.add_argument("--bullet-id", required=True)
+    outreach_reconcile = commands.add_parser("outreach-reconcile")
+    outreach_reconcile.add_argument("--id", required=True)
+    outreach_reconcile.add_argument("--follow-up-id", required=True)
+    outreach_reconcile.add_argument("--resolution", choices=("draft_created", "note_created", "not_created"), required=True)
+    outreach_reconcile.add_argument("--evidence", type=Path, required=True)
+    outreach_reconcile.add_argument("--note", required=True)
+    outreach_reconcile.add_argument("--adapter-id")
+    outreach_sent = commands.add_parser("outreach-confirm-send", help="Record an already completed user-confirmed send; perform no send")
+    outreach_sent.add_argument("--id", required=True)
+    outreach_sent.add_argument("--follow-up-id", required=True)
+    outreach_sent.add_argument("--at", required=True)
+    outreach_sent.add_argument("--evidence", type=Path, required=True)
+    report = commands.add_parser("report", help="Print a deterministic weekly report from local records")
+    report.add_argument("--week", nargs="?", default="current", const="current", help="ISO week or Monday date; default current week")
+    report.add_argument("--shareable", action="store_true", help="Remove private labels and blocker IDs")
+    report.add_argument("--json", action="store_true")
     mail = commands.add_parser("mail-sync", help="Import a supplied read-only local mail export")
     mail.add_argument("--file", type=Path)
     args = parser.parse_args()
@@ -1049,6 +1132,18 @@ def main():
             return
         policy = settings.load_settings(root)
         now = datetime.now(ZoneInfo(policy["timezone"]))
+        if args.command in {"next-action", "run"}:
+            from runner_workspace import build_runner
+            controller = build_runner(root, args.run_id, args.batch)
+            if args.command == "next-action":
+                result = controller.plan_next(now).as_dict()
+            else:
+                result = {"actions": [a.as_dict() for a in controller.execute(clock=lambda: datetime.now(ZoneInfo(settings.load_settings(root)["timezone"])), max_steps=args.steps)]}
+            with writer(root):
+                if export_state(root)["dirty"]:
+                    result["export"] = recover(root, export_csv) if not args.defer_export else {"status": "deferred", "ok": False}
+            print(json.dumps(result, indent=2))
+            return
         with writer(root):
             if args.command == "status":
                 registry = read(root / "resumes/registry.json")
@@ -1102,7 +1197,7 @@ def main():
             elif args.command == "browser-guard":
                 work_guard(root, args.run_id, now, "browser-guard")
                 if args.id:
-                    retry_guard(read(root / "applications/records" / slug(args.id) / "record.json"), now)
+                    retry_guard(read(root / "applications/records" / slug(args.id) / "record.json"), now, root=root)
                 result = {"browser_allowed": True}
             elif args.command == "reindex":
                 result = seen_index.reindex(root, records(root), canonical_url)
@@ -1155,7 +1250,7 @@ def main():
             elif args.command == "scope-check":
                 record = read(root / "applications/records" / slug(args.id) / "record.json")
                 work_guard(root, record.get("run_id"), now, "scope-check")
-                retry_guard(record, now)
+                retry_guard(record, now, root=root)
                 result = check_scope(root, record, args.url, now)
             elif args.command == "run-summary":
                 result = cleanup.run_summary(root, args.run_id, now)
@@ -1163,7 +1258,7 @@ def main():
                 result = cleanup.cleanup_run(root, args.run_id, now, execute=args.execute, export_callback=lambda: recover(root, export_csv))
             elif args.command == "register-tab":
                 work_guard(root, args.run_id, now, "register-tab")
-                retry_guard(read(root / "applications/records" / slug(args.id) / "record.json"), now)
+                retry_guard(read(root / "applications/records" / slug(args.id) / "record.json"), now, root=root)
                 result = cleanup.register_tab(root, args.run_id, args.window_id, args.tab_id, args.url, args.id, now)
             elif args.command == "batch-progress":
                 result = batches.batch_progress(records(root), args.batch_id, args.target, read(args.categories) if args.categories else None)
@@ -1173,6 +1268,26 @@ def main():
                 result = contact_change(root, args.id, now, add=read(args.add) if args.add else None,
                                         remove=args.remove, email_text=args.email_evidence.read_text() if args.email_evidence else None,
                                         deferred=args.defer_export)
+            elif args.command == "computer-use":
+                result = fallback_session(root, args.id, args.run_id, args.session_id, read(args.plan), now)
+            elif args.command == "outreach":
+                from outreach_workspace import create_follow_up
+                result = create_follow_up(root, args.run_id, args.id, args.contact_id, args.channel, args.project_id, args.bullet_id, now, deferred=args.defer_export)
+            elif args.command == "outreach-reconcile":
+                from outreach_workspace import reconcile_follow_up
+                result = reconcile_follow_up(root, args.id, args.follow_up_id, now, resolution=args.resolution, evidence=args.evidence, note=args.note, adapter_id=args.adapter_id, deferred=args.defer_export)
+            elif args.command == "outreach-confirm-send":
+                from outreach_workspace import confirm_manual_send
+                result = confirm_manual_send(root, args.id, args.follow_up_id, occurred_at=args.at, recorded_at=now, evidence=args.evidence, deferred=args.defer_export)
+            elif args.command == "metrics":
+                from metrics import load_events, summarize
+                result = summarize(records(root), load_events(root))
+            elif args.command == "report":
+                week = now.date().isoformat() if args.week == "current" else args.week
+                if args.week == "current":
+                    week = (now.date() - timedelta(days=now.weekday())).isoformat()
+                from metrics import load_events
+                result = reports.weekly_report(records(root), week, now=now, timezone=policy["timezone"], shareable=args.shareable, metrics=load_events(root))
             elif args.command == "mail-sync":
                 result = mail_import.sync_local(root, mail_import.read_export(args.file) if args.file else None, now)
                 if result["status"] == "synced":
@@ -1181,8 +1296,15 @@ def main():
                 result = review_form(root, args.id, read(args.visible), now, args.defer_export)
             else:
                 result = {"export": recover(root, export_csv)}
-        print(json.dumps(result, indent=2, ensure_ascii=False))
+        if args.command == "report" and not args.json:
+            print(reports.format_report(result))
+        else:
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        if args.command == "outreach" and result["status"] in {"blocked", "draft_uncertain"}:
+            parser.exit(2)
         if args.command == "mail-sync" and result["status"] == "blocked":
+            parser.exit(2)
+        if args.command == "computer-use" and result["outcome"] != "completed":
             parser.exit(2)
         if args.command == "export" and not result["export"]["ok"]:
             parser.exit(1)

@@ -34,7 +34,7 @@ The helpers do not extract email addresses or infer which person owns them.
 The current extractor's card cannot supply an email; normally create a separate
 `jd_text` or `confirmation_email` entry when printed email evidence exists.
 
-## Parent integration hooks
+## Integration interfaces
 
 ```python
 from contacts import (
@@ -125,11 +125,7 @@ a `source` label alone is insufficient. Do not load private email from here.
 
 ### CLI, export, and dashboard
 
-The parent owns `workspace.py contact --id ... --add/--remove`, record loading,
-permission/guard checks, atomic persistence, and export refresh. For add, supply
-one contact JSON object plus already available JD/confirmation evidence; call
-`add_contact`. For remove, pass the normalized `contact_id` to `remove_contact`.
-Do not expose a verification flag. Persist only after successful validation.
+The integrated `workspace.py contact --id ... --add <contact.json>` and `--remove <contact-id>` commands load the record under the writer lock, validate the requested change and refresh exports after durable persistence. Additions use already available JD text or an explicitly supplied confirmation source via `--email-evidence`. Removal matches one normalized contact ID. There is no verification flag.
 
 `export_dashboard` preserves `contacts` as structured objects in both JSON and
 the classic-script snapshot. The details dialog displays the visible facts,
@@ -139,17 +135,13 @@ links require absolute HTTP(S) URLs without credentials, whitespace, controls or
 backslashes; unsafe imported URLs are displayed as plain text. No contact links
 are visited, and emails remain text.
 
-The CSV writer lives in parent-owned `workspace.py`. Import `contacts_json`,
-append `"contacts"` to `export_csv`'s `fields`, and override the row value before
-the existing CSV writer and formula escaping:
+The integrated CSV writer stores a `contacts` column using stable JSON before ordinary CSV quoting and formula escaping:
 
 ```python
 row["contacts"] = contacts_json(record.get("contacts"))
 ```
 
-The required parent changes are the capture hook, CSV column/row override, CLI
-add/remove glue, and any explicit allowlists. This integration does not modify
-`workspace.py`, settings, publication checks, or repository permissions.
+Capture normalization, the CSV column, add/remove commands and the explicit publication allowlists are integrated. Contact validation does not change application submission history or invent missing facts.
 
 ## Verification
 
@@ -166,7 +158,5 @@ verification, deterministic IDs, retries, and deep-copy add/remove behavior that
 preserves submitted records. Integration coverage includes strict listing input,
 deferred versus actual capture time, extractor/card compatibility, invalid-source
 stdin rejection without capture artifacts, structured dashboard exports, CSV
-JSON round trips, safe DOM rendering and stale-detail clearing. Positive capture
-and CSV CLI round trips require the parent-owned hooks above; the standalone
-integration suite tests their pure normalization/serialization APIs. No real
+JSON round trips, safe DOM rendering and stale-detail clearing. Positive `capture --stdin`, CSV round trips and contact commands are covered by `test_contacts_cli.py`; `test_contacts_integration.py` checks strict normalization and serialization. No real
 employer or private workspace is used.

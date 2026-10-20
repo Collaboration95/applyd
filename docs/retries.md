@@ -166,8 +166,7 @@ it must preserve counts, budget and the reconciliation audit trail.
 ## Workspace CLI and persistence
 
 The CLI integration is in `scripts/workspace.py`. The current integration uses
-a fixed maximum of **3** retries; budget configuration belongs to issue 21.
-It never reads a retry budget from settings or rewrites a frozen `run.json`.
+`work_budget.max_retries`, default **3**, through the minimum current/frozen/saved limit. Every workspace retry boundary uses that limit; increasing settings cannot replenish a saved budget. Frozen `run.json` bytes remain unchanged.
 
 ```sh
 python3 scripts/workspace.py retry-failure --id app-example --reason timeout

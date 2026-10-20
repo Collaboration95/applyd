@@ -189,3 +189,10 @@ __pycache__/
 !/tests/test_computer_fallback.py
 !/tests/test_fallback_integration.py
 !/tests/fixtures/fallback-form.html
+
+# Generic durable next-action controller and synthetic parent adapter checks.
+!/scripts/runner.py
+!/scripts/runner_workspace.py
+!/docs/runner.md
+!/tests/test_runner.py
+!/tests/test_runner_workspace.py

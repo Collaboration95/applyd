@@ -1075,6 +1075,12 @@ def main():
     fallback.add_argument("--run-id", required=True)
     fallback.add_argument("--session-id", required=True)
     fallback.add_argument("--plan", type=Path, required=True)
+    for command in ("next-action", "run"):
+        runner_command = commands.add_parser(command, help="Plan or execute bounded durable actions through an adapter")
+        runner_command.add_argument("--run-id", required=True)
+        runner_command.add_argument("--batch", type=Path, required=True)
+        if command == "run":
+            runner_command.add_argument("--steps", type=int, default=1)
     args = parser.parse_args()
     root = select_root(args.workspace)
     try:
@@ -1089,6 +1095,18 @@ def main():
             return
         policy = settings.load_settings(root)
         now = datetime.now(ZoneInfo(policy["timezone"]))
+        if args.command in {"next-action", "run"}:
+            from runner_workspace import build_runner
+            controller = build_runner(root, args.run_id, args.batch)
+            if args.command == "next-action":
+                result = controller.plan_next(now).as_dict()
+            else:
+                result = {"actions": [a.as_dict() for a in controller.execute(clock=lambda: datetime.now(ZoneInfo(settings.load_settings(root)["timezone"])), max_steps=args.steps)]}
+            with writer(root):
+                if export_state(root)["dirty"]:
+                    result["export"] = recover(root, export_csv) if not args.defer_export else {"status": "deferred", "ok": False}
+            print(json.dumps(result, indent=2))
+            return
         with writer(root):
             if args.command == "status":
                 registry = read(root / "resumes/registry.json")

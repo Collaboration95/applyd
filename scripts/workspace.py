@@ -27,6 +27,7 @@ import seen_index
 import settings
 import answers as answer_core
 from listing_input import ListingError, validate_listing
+import safety
 from zoneinfo import ZoneInfo
 
 STATUSES = {"discovered", "preparing", "awaiting_answer", "ready", "submitted",
@@ -224,7 +225,16 @@ def records(root):
     return [read(p) for p in sorted((root / "applications/records").glob("*/record.json"))]
 
 
+def work_guard(root, run_id, now, command):
+    try:
+        safety.guard(root, run_id or os.environ.get("APPLYD_RUN_ID") or "local", now, command)
+    except safety.SafetyBlocked:
+        safety.notify_stop(root, now, safety.local_notification)
+        raise
+
+
 def preflight(root, record, now):
+    work_guard(root, record.get("run_id"), now, "preflight")
     if record["status"] != "ready":
         raise ValueError("Only a ready application may pass submission preflight")
     prepared = record.get("prepared")
@@ -299,6 +309,7 @@ def recover_submit(root, now):
 
 
 def capture(root, data, now):
+    work_guard(root, data.get("run_id") if isinstance(data, dict) else None, now, "capture")
     data = dict(data)
     policy = settings.load_settings(root)
     reason = settings.eligibility(data, policy)
@@ -341,6 +352,7 @@ def capture(root, data, now):
 def prepare_answers(root, application_id, questions, now):
     path = root / "applications/records" / slug(application_id) / "record.json"
     record = read(path)
+    work_guard(root, record.get("run_id"), now, "prepare-answers")
     if record.get("submissions") or record["status"] in {"submitted", "submission_uncertain"}:
         raise ValueError("Cannot prepare answers for a confirmed or uncertain submission")
     prepared = answer_core.prepare_answers(root, record, questions, now)
@@ -378,6 +390,8 @@ def event(root, args, now):
     directory = root / "applications/records" / slug(args.id)
     record = read(directory / "record.json")
     status = args.status
+    if status in {"preparing", "ready"}:
+        work_guard(root, record.get("run_id"), now, "event")
     if status not in STATUSES or status == "discovered":
         raise ValueError("Invalid event status")
     if status == record["status"]:
@@ -532,6 +546,14 @@ def main():
     import_answers.add_argument("--file", type=Path, required=True)
     import_answers.add_argument("--preview", action="store_true")
     commands.add_parser("requeue")
+    safety_check = commands.add_parser("safety-check")
+    safety_check.add_argument("--file", type=Path, required=True, help="Current-page text and URL JSON")
+    safety_check.add_argument("--run-id", required=True)
+    safety_check.add_argument("--screenshot")
+    resume_stop = commands.add_parser("resume-stop")
+    resume_stop.add_argument("--run-id", required=True)
+    resume_stop.add_argument("--operator", required=True)
+    resume_stop.add_argument("--note", required=True)
     args = parser.parse_args()
     root = select_root(args.workspace)
     try:
@@ -583,6 +605,7 @@ def main():
             elif args.command == "reindex":
                 result = seen_index.reindex(root, records(root), canonical_url)
             elif args.command == "run-start":
+                work_guard(root, args.id, now, "run-start")
                 result = settings.run_start(root, args.id, now)
                 context = answer_core.context(root, now)
                 atomic_json(root / "applications/runs" / args.id / ("context-" + context["version"] + ".json"), context)
@@ -611,9 +634,23 @@ def main():
             elif args.command == "requeue":
                 result = requeue_answers(root, now)
                 export_csv(root)
+            elif args.command == "safety-check":
+                page = read(args.file)
+                detection = safety.detect(page.get("text", ""), page.get("url", ""))
+                if detection:
+                    evidence = {"screenshot": args.screenshot, "kind": detection.kind} if args.screenshot else None
+                    incident = safety.stop_run(root, args.run_id, "account_safety", now, evidence, safety.local_notification)
+                    raise safety.SafetyBlocked(incident)
+                work_guard(root, args.run_id, now, "safety-check")
+                result = {"safe": True}
+            elif args.command == "resume-stop":
+                incident = safety.resume_stop(root, args.run_id, now, {"operator": args.operator, "note": args.note}, "resume-stop")
+                result = {"resolved": True, "stop_id": incident["stop_id"]}
             else:
                 result = export_csv(root)
         print(json.dumps(result, indent=2, ensure_ascii=False))
+    except safety.SafetyError as exc:
+        parser.exit(2, f"{exc}\n")
     except ListingError as exc:
         parser.exit(2, f"listing_validation: {exc}\n")
     except (ValueError, KeyError, OSError, TypeError, subprocess.CalledProcessError, zipfile.BadZipFile) as exc:

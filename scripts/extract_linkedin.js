@@ -75,7 +75,31 @@
     return path ? path[1] : (query[0] || null);
   }
 
+  function detectAccountSafety(pageText, pageURL = "") {
+    const text = String(pageText || "").replace(/\s+/g, " ").toLowerCase();
+    const patterns = [
+      ["captcha", /\b(?:captcha|recaptcha|hcaptcha)\b/],
+      ["challenge", /verify (?:that )?you(?:'re| are) (?:a )?human|verify your identity|security verification|checking your browser/],
+      ["unusual_activity", /unusual activity|suspicious activity|automated (?:activity|behavior|behaviour)/],
+      ["restriction", /account (?:has been |is |was |temporarily )*(?:restricted|suspended|locked|disabled)/],
+      ["rate_limit", /too many requests|rate[ -]?limit(?:ed|ing| exceeded)?|try again later/],
+      ["sign_in", /^(?:sign in|log in|login)\b|(?:sign in|log in) to (?:continue|view|access)|session (?:has )?expired/]
+    ];
+    let path = "";
+    try { path = new URL(pageURL).pathname; } catch {}
+    if (/\/(?:checkpoint|challenge|security-verification)(?:\/|$)/i.test(path)) return "challenge";
+    if (/\/(?:login|signin|authwall)(?:\/|$)/i.test(path)) return "sign_in";
+    return patterns.find(([, pattern]) => pattern.test(text))?.[0] || null;
+  }
+
   function extractListing(doc) {
+    const detection = detectAccountSafety(doc.body?.innerText || "", doc.location?.href || doc.URL || "");
+    if (detection) {
+      const error = new ListingError("account_safety", detection);
+      error.stop_reason = "account_safety";
+      error.kind = detection;
+      throw error;
+    }
     const root = all(doc, "root")[0];
     if (!root) throw new ListingError("title", "job details panel not found");
     const sourceURL = httpURL(required(doc.location?.href, "source_url"), undefined, "source_url");
@@ -131,7 +155,7 @@
   }
 
   if (typeof module !== "undefined" && module.exports) {
-    module.exports = { extractListing, ListingError, SELECTORS };
+    module.exports = { extractListing, ListingError, SELECTORS, detectAccountSafety };
     return;
   }
   return JSON.stringify(extractListing(document));

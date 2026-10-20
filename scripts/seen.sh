@@ -2,8 +2,13 @@
 # Batch lookup uses shell builtins only; APPLYD_WORKSPACE selects private data.
 set -eu
 root=${APPLYD_WORKSPACE:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)}
-if [ -e "$root/applications/STOP" ]; then
-    printf '%s\n' 'BLOCKED: manual_stop' >&2
+if [ -e "$root/applications/STOP" ] || [ -L "$root/applications/STOP" ] ||
+   [ -e "$root/applications/SAFETY_STOP" ] || [ -L "$root/applications/SAFETY_STOP" ] ||
+   [ -e "$root/applications/SAFETY_STOP_PENDING" ] || [ -L "$root/applications/SAFETY_STOP_PENDING" ]; then
+    if [ -e "$root/applications/STOP" ] || [ -L "$root/applications/STOP" ]; then
+        : > "$root/applications/SAFETY_STOP_PENDING"
+    fi
+    printf '%s\n' 'BLOCKED: safety_stop; record and reconcile through the runner' >&2
     exit 2
 fi
 for identity do

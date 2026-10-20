@@ -25,6 +25,7 @@ GENERIC_FILES = frozenset({
     "scripts/settings.py", "settings.example.json", "docs/settings.md",
     "scripts/answers.py", "docs/answers.md",
     "scripts/extract_linkedin.js", "scripts/listing_input.py", "docs/extractor.md",
+    "scripts/safety.py", "docs/safety.md",
     "tests/fixtures/linkedin-easy-card.html", "tests/fixtures/linkedin-no-card.html", "tests/fixtures/linkedin-external.html",
     "dashboard/index.html", "dashboard/app.js", "dashboard/runs.js",
     "dashboard/style.css", "dashboard/README.md",

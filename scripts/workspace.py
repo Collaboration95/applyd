@@ -29,6 +29,7 @@ import answers as answer_core
 from listing_input import ListingError, validate_listing
 import safety
 import scope_guard
+import setup_workspace
 from zoneinfo import ZoneInfo
 
 STATUSES = {"discovered", "preparing", "awaiting_answer", "ready", "submitted",
@@ -516,6 +517,8 @@ def main():
     parser.add_argument("--workspace", type=Path, help="Private data root (overrides APPLYD_WORKSPACE)")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("status")
+    commands.add_parser("init", help="Initialize a fresh empty private workspace")
+    commands.add_parser("doctor", help="Inspect local prerequisites without browser actions")
     projects = commands.add_parser("projects")
     projects.add_argument("--id")
     projects.add_argument("--tag")
@@ -582,6 +585,15 @@ def main():
     args = parser.parse_args()
     root = select_root(args.workspace)
     try:
+        if args.command == "init":
+            result = setup_workspace.init_workspace(root)
+            export_csv(root)
+            print(json.dumps(result, indent=2))
+            return
+        if args.command == "doctor":
+            result = setup_workspace.doctor(root)
+            print(json.dumps(result, indent=2))
+            return
         policy = settings.load_settings(root)
         now = datetime.now(ZoneInfo(policy["timezone"]))
         with writer(root):

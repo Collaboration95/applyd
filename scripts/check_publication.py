@@ -31,6 +31,7 @@ GENERIC_FILES = frozenset({
     "scripts/cleanup.py", "scripts/cleanup_tabs.sh", "docs/cleanup.md",
     "dashboard/control.js", "scripts/dashboard_payload.py", "docs/dashboard-control.md",
     "scripts/export_recovery.py", "docs/export-recovery.md",
+    "scripts/outcomes.py", "scripts/batches.py", "docs/outcomes.md", "docs/batches.md",
     # Audited generic artifacts in the open lean-workflow review branch.
     ".claude/skills/answer-questions/SKILL.md", ".claude/skills/cleanup-run/SKILL.md",
     "docs/batch.example.json", "docs/lean-workflows.md",

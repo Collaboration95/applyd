@@ -2,17 +2,24 @@
   "schema_version": 1,
   "mode": "apply",
   "easy_apply_only": false,
-  "external_hosts": {"allow": [], "deny": []},
+  "external_hosts": {
+    "allow": [],
+    "deny": []
+  },
   "daily_cap": null,
   "per_run_cap": null,
   "per_run_minutes": null,
   "company_blocklist": [],
   "title_blocklist": [],
   "max_required_years": null,
-  "retryable_statuses": ["failed", "awaiting_answer"],
+  "retryable_statuses": [
+    "failed",
+    "awaiting_answer"
+  ],
   "start_mode": "recommended",
   "timezone": "UTC",
   "browser": null,
   "resume_scope": null,
-  "role_rules": {}
+  "role_rules": {},
+  "follow_up_days": 14
 }

@@ -23,14 +23,18 @@ from resolve_resume import ROOT, check_selection, current_projects, latest_relea
 from export_dashboard import export_dashboard
 from workspace_config import select_root
 import seen_index
+import settings
+from zoneinfo import ZoneInfo
 
 STATUSES = {"discovered", "preparing", "awaiting_answer", "ready", "submitted",
-            "submission_uncertain", "failed", "skipped", "rejected", "interview", "withdrawn"}
+            "submission_uncertain", "failed", "skipped", "rejected", "interview", "withdrawn",
+            "saved", "dry_run_complete"}
 TRANSITIONS = {
     "discovered": {"preparing", "skipped"},
-    "preparing": {"awaiting_answer", "ready", "failed", "skipped"},
+    "preparing": {"awaiting_answer", "ready", "failed", "skipped", "dry_run_complete"},
     "awaiting_answer": {"preparing", "skipped"},
-    "ready": {"preparing", "submitted", "submission_uncertain", "failed", "skipped"},
+    "ready": {"preparing", "submitted", "submission_uncertain", "failed", "skipped", "dry_run_complete"},
+    "saved": {"preparing", "skipped"}, "dry_run_complete": {"preparing", "skipped"},
     "submission_uncertain": {"submitted", "failed", "withdrawn"},
     "failed": {"preparing", "skipped"}, "skipped": {"preparing"},
     "submitted": {"rejected", "interview", "withdrawn"},
@@ -223,6 +227,7 @@ def preflight(root, record, now):
     prepared = record.get("prepared")
     if not prepared:
         raise ValueError("Application has no prepared submission snapshot")
+    settings.check_submission(root, record, now)
     current = resolve(read(root / "resumes/registry.json"), prepared["scope"], "application", now, root)
     if current["id"] != prepared["id"]:
         raise ValueError("Prepared resume has been replaced; prepare again")
@@ -232,9 +237,19 @@ def preflight(root, record, now):
 
 
 def capture(root, data, now):
-    for key in ("company", "role", "location", "listing_url", "job_description"):
+    data = dict(data)
+    policy = settings.load_settings(root)
+    reason = settings.eligibility(data, policy)
+    if data.get("run_id"):
+        frozen = settings.load_run(root, data["run_id"])["settings"]
+        reason = reason or settings.eligibility(data, frozen)
+    required = ("company", "role", "listing_url") if reason else ("company", "role", "location", "listing_url", "job_description")
+    for key in required:
         if not isinstance(data.get(key), str) or not data[key].strip():
             raise ValueError(f"Missing non-empty job field: {key}")
+    if reason:
+        data.setdefault("location", "")
+        data.setdefault("job_description", "")
     canonical = canonical_url(data["listing_url"])
     if not (root / "applications/index/.initialized").exists():
         seen_index.reindex(root, records(root), canonical_url)
@@ -248,15 +263,17 @@ def capture(root, data, now):
     directory.mkdir(parents=True, exist_ok=False)
     description = data.pop("job_description")
     (directory / "job-description.txt").write_text(description)
+    status = "skipped" if reason else "saved" if policy["mode"] == "save_only" else "discovered"
     record = {**data, "application_id": application_id, "canonical_listing_url": canonical,
-              "captured_at": now.isoformat(), "status": "discovered", "status_updated_at": now.isoformat(),
+              "captured_at": now.isoformat(), "status": status, "status_updated_at": now.isoformat(),
               "job_description_path": str((directory / "job-description.txt").relative_to(root)),
               "job_description_sha256": digest(directory / "job-description.txt"),
-              "events": [{"at": now.isoformat(), "status": "discovered"}], "submissions": []}
+              "events": [{"at": now.isoformat(), "status": status, "reason": reason}], "submissions": [],
+              "stop_reason": reason}
     atomic_json(directory / "record.json", record)
     seen_index.update(root, record, canonical_url)
     export_csv(root)
-    return {"application_id": application_id, "record": str(directory / "record.json"), "duplicate": False}
+    return {"application_id": application_id, "record": str(directory / "record.json"), "duplicate": False, "status": status, "reason": reason}
 
 
 def event(root, args, now):
@@ -276,6 +293,10 @@ def event(root, args, now):
         if not args.resume_scope or not args.answers:
             raise ValueError("Ready requires --resume-scope and an exact questions/answers JSON file")
         resume = resolve(read(root / "resumes/registry.json"), args.resume_scope, "application", now, root)
+        run_id = getattr(args, "run_id", None) or record.get("run_id")
+        if run_id:
+            settings.load_run(root, run_id)
+            record["run_id"] = run_id
         answers = read(args.answers)
         if not isinstance(answers, list) or any(not isinstance(x, dict) or "question" not in x or "answer" not in x for x in answers):
             raise ValueError("Answers must be a JSON list with exact question and answer fields (an empty list is allowed)")
@@ -284,7 +305,7 @@ def event(root, args, now):
         target = attempt / Path(resume["path"]).name
         shutil.copy2(resume["path"], target)
         atomic_json(attempt / "answers.json", answers)
-        record["prepared"] = {**resume, "prepared_at": now.isoformat(),
+        record["prepared"] = {**resume, "prepared_at": now.isoformat(), "run_id": run_id,
                               "exact_resume_copy": str(target.relative_to(root)),
                               "answers_path": str((attempt / "answers.json").relative_to(root)),
                               "answers_sha256": digest(attempt / "answers.json")}
@@ -369,6 +390,7 @@ def main():
     publish.add_argument("--note", required=True)
     new = commands.add_parser("capture")
     new.add_argument("--file", type=Path, required=True)
+    new.add_argument("--run-id")
     update = commands.add_parser("event")
     update.add_argument("--id", required=True)
     update.add_argument("--status", choices=sorted(STATUSES - {"discovered"}), required=True)
@@ -376,14 +398,20 @@ def main():
     update.add_argument("--resume-scope")
     update.add_argument("--answers", type=Path)
     update.add_argument("--evidence", type=Path)
+    update.add_argument("--run-id")
     check = commands.add_parser("preflight")
     check.add_argument("--id", required=True)
     commands.add_parser("export")
     commands.add_parser("reindex")
+    run = commands.add_parser("run-start")
+    run.add_argument("--id", required=True)
+    screen = commands.add_parser("screen", help="Check a result-card header before extraction or navigation")
+    screen.add_argument("--file", type=Path, required=True)
     args = parser.parse_args()
     root = select_root(args.workspace)
-    now = datetime.now(timezone.utc).astimezone()
     try:
+        policy = settings.load_settings(root)
+        now = datetime.now(ZoneInfo(policy["timezone"]))
         with writer(root):
             if args.command == "status":
                 registry = read(root / "resumes/registry.json")
@@ -416,13 +444,22 @@ def main():
             elif args.command == "release":
                 result = release(root, args, now)
             elif args.command == "capture":
-                result = capture(root, read(args.file), now)
+                data = read(args.file)
+                if args.run_id:
+                    data["run_id"] = args.run_id
+                result = capture(root, data, now)
             elif args.command == "event":
                 result = event(root, args, now)
             elif args.command == "preflight":
                 result = preflight(root, read(root / "applications/records" / slug(args.id) / "record.json"), now)
             elif args.command == "reindex":
                 result = seen_index.reindex(root, records(root), canonical_url)
+            elif args.command == "run-start":
+                result = settings.run_start(root, args.id, now)
+            elif args.command == "screen":
+                data = read(args.file)
+                reason = settings.eligibility(data, policy)
+                result = capture(root, data, now) if reason else {"eligible": True}
             else:
                 result = export_csv(root)
         print(json.dumps(result, indent=2, ensure_ascii=False))

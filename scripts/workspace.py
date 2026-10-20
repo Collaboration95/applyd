@@ -30,6 +30,7 @@ from listing_input import ListingError, validate_listing
 import safety
 import scope_guard
 import setup_workspace
+import cleanup
 from zoneinfo import ZoneInfo
 
 STATUSES = {"discovered", "preparing", "awaiting_answer", "ready", "submitted",
@@ -582,6 +583,17 @@ def main():
     scope = commands.add_parser("scope-check")
     scope.add_argument("--id", required=True)
     scope.add_argument("--url", required=True)
+    summary = commands.add_parser("run-summary")
+    summary.add_argument("--run-id", required=True)
+    cleanup_run = commands.add_parser("cleanup-run")
+    cleanup_run.add_argument("--run-id", required=True)
+    cleanup_run.add_argument("--execute", action="store_true")
+    tab = commands.add_parser("register-tab")
+    tab.add_argument("--run-id", required=True)
+    tab.add_argument("--window-id", required=True, type=int)
+    tab.add_argument("--tab-id", required=True, type=int)
+    tab.add_argument("--url", required=True)
+    tab.add_argument("--id", required=True)
     args = parser.parse_args()
     root = select_root(args.workspace)
     try:
@@ -687,6 +699,13 @@ def main():
                 record = read(root / "applications/records" / slug(args.id) / "record.json")
                 work_guard(root, record.get("run_id"), now, "scope-check")
                 result = check_scope(root, record, args.url, now)
+            elif args.command == "run-summary":
+                result = cleanup.run_summary(root, args.run_id, now)
+            elif args.command == "cleanup-run":
+                result = cleanup.cleanup_run(root, args.run_id, now, execute=args.execute, export_callback=lambda: export_csv(root))
+            elif args.command == "register-tab":
+                work_guard(root, args.run_id, now, "register-tab")
+                result = cleanup.register_tab(root, args.run_id, args.window_id, args.tab_id, args.url, args.id, now)
             else:
                 result = export_csv(root)
         print(json.dumps(result, indent=2, ensure_ascii=False))

@@ -115,3 +115,9 @@ __pycache__/
 !/scripts/setup_workspace.py
 !/tests/test_setup_workspace.py
 !/docs/setup.md
+
+# Generic run-owned tab cleanup and synthetic adapter fixtures.
+!/scripts/cleanup.py
+!/scripts/cleanup_tabs.sh
+!/tests/test_cleanup.py
+!/docs/cleanup.md

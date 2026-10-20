@@ -5,9 +5,10 @@ import batches
 import settings
 import retry_policy
 import budgets
+import metrics
 
 
-def build_runner(root, run_id, brief_file, adapter=None):
+def build_runner(root, run_id, brief_file, adapter=None, *, monotonic=None):
     import workspace as w
     root = Path(root).resolve()
     brief_file = Path(brief_file)
@@ -125,5 +126,12 @@ def build_runner(root, run_id, brief_file, adapter=None):
             if reason in {retry_policy.Reason.LOGIN, retry_policy.Reason.PAGE_CHANGED, retry_policy.Reason.ACCOUNT_SAFETY}:
                 w.safety.stop_run(root, run_id, "manual_stop", now)
 
-    hooks = Hooks(lambda: w.writer(root), recover, queue, guard, begin, verify, failure)
-    return Runner(root, run_id, hooks=hooks, adapter=adapter)
+    def answer_reuse(action):
+        saved = record(action)
+        snapshot = saved.get("answer_preparation") or saved.get("prepared") or {}
+        if not snapshot.get("answers_path"):
+            return None
+        return metrics.known_answer_reuse(w.read(private_file(snapshot["answers_path"])))
+
+    hooks = Hooks(lambda: w.writer(root), recover, queue, guard, begin, verify, failure, answer_reuse)
+    return Runner(root, run_id, hooks=hooks, adapter=adapter, monotonic=monotonic)

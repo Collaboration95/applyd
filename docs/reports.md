@@ -1,0 +1,28 @@
+# Weekly reports
+
+`scripts/reports.py` exposes two pure helpers:
+
+```python
+weekly_report(records, week, now=None, timezone="UTC", pending_questions=None, shareable=False, metrics=None)
+format_report(report)
+```
+
+Pass application record dictionaries to `weekly_report`; it does not read the workspace, call a model, or perform network or employer actions. `week` is a Monday ISO date (`2026-10-19`) or an ISO week (`2026-W43`). A date on any other weekday is rejected. `now` is accepted for a caller's clock and must include an offset when supplied. The report contains no generated-at clock, so identical inputs produce identical output. A parent CLI can choose the current week from its own clock.
+
+The reporting timezone is an IANA name. The period is Monday 00:00 through the following Monday 00:00 in that timezone. Confirmed application volume requires a submission with submitted status and saved confirmation evidence. Cross-posted records are combined with the existing batch identity grouping rules. A unique application belongs to the week containing a confirmed submission occurrence. Responses count unique applications with a response occurrence in that same week, using `outcomes.responded` semantics: acknowledged, assessment, interview, rejected, or offer; withdrawn alone is not a response. Outcome `occurred_at` (or the persisted `latest_outcome_at`) determines the week. Recording timestamps and mutable status-update times do not.
+
+Breakdowns use saved prepared/submission metadata: `scope` or `resume_scope`, `preset` or `resume_preset`, `role_tags` (or `tags`), and channel. Channel accepts explicit `easy_apply`/`external`, boolean `easy_apply`/`is_easy_apply`, or marks a differing application host as external. A matching host alone does not prove Easy Apply; missing data is grouped as `unknown`. Rates are same-week responses divided by same-week applications in each group; no denominator yields `null`.
+
+Pass `metrics=metrics.load_events(root)` to include the separate private run telemetry. With telemetry supplied, the effort median includes unique confirmed applications only when preparation, review and submit each have a verified observed stage and all recorded reservations for that identity before first confirmation have measured durations. Partial/interrupted or missing telemetry excludes that application from the median. The report exposes complete, partial and absent coverage counts under `metrics`; missing historical measurements remain unknown. Effort for the week's first-confirmation cohort can include measured stages from earlier weeks. Later follow-up actions cannot move or inflate its confirmation effort. Shared discovery is not allocated to applications. See [measurement semantics and APIs](metrics.md).
+
+Stage totals, reserved/observed attempts, retry reservations, answer reuse and provider usage select telemetry reservations in the reporting week. `totals.provider_usage` covers those recorded actions only. Each provider field remains `null` unless all selected reservations report that measurement; zero requires an explicit measured zero. `metrics.provider_coverage` exposes per-field measured action counts and partial subtotals. The text report labels recorded-action usage and partial subtotals explicitly: these are not the full cost of uninstrumented work or historical applications. No durations are inferred from timestamps and no token costs are estimated.
+
+The default `metrics=None` preserves the existing record-field reporting behavior and output shape. It reads only explicit `effort_seconds`, `stage_durations_seconds`, or `stage_durations` on a record or confirmed submission. Stage mappings contain seconds or objects with `duration_seconds`. Provider usage stays `null` in that compatibility mode. Supplying an empty telemetry list selects the new coverage semantics with all legacy telemetry unknown.
+
+`pending_questions` is a current inbox snapshot from `blocked_on_answer_ids`, including the exact application and question IDs in local reports. Callers can pass an explicit snapshot as a mapping from application ID to question IDs, or a list of objects with `application_id` and `question_ids`/`blocked_on_answer_ids`. Stop reasons are counted from dated `events` using `at` or `occurred_at`, deduplicated by identity and occurrence, sorted by descending count with a stable code tiebreaker; unrecognized values become `other`. A top-level reason without an occurrence timestamp is not assigned to a week. The report does not include notes, question text, employer names, listing URLs, or filenames.
+
+Use `shareable=True` to produce aggregate-only output, including JSON. It replaces arbitrary resume scopes, presets, and role tags with fixed allowlisted groups, reduces unknown stop reasons to `other`, and removes all pending IDs. Telemetry summaries contain only fixed stage/reason labels and numbers/null, never source identifiers or content. The normal local report retains useful supplied labels and blocker IDs. Do not publish a local report or raw `load_events` results.
+
+The report is one-screen oriented. `format_report` prints totals, measured effort, grouped rates, typed stop-reason counts, and pending counts; local mode also prints actual blocked IDs.
+
+CLI: `python3 scripts/workspace.py --workspace "$APPLYD_WORKSPACE" report --week` uses the current configured week. Supply an ISO week (`--week 2026-W43`) or Monday date to reproduce a period. Add `--json` for the object and `--shareable` for aggregate-only output. The CLI loads separate telemetry without changing records or exports. `workspace.py metrics` prints all-time aggregate action measurements without source identifiers.

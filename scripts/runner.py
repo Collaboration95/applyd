@@ -6,11 +6,13 @@ from enum import Enum
 import json
 from pathlib import Path
 import re
+import time
 from typing import Callable, ContextManager
 from zoneinfo import ZoneInfo
 
 import batches
 import budgets
+import metrics
 import retry_policy
 import settings
 
@@ -22,6 +24,10 @@ class Kind(str, Enum):
     SUBMIT = "submit"
     HANDOFF = "manual_handoff"
     COMPLETE = "complete"
+
+
+class MetricsUnavailable(ValueError):
+    """A telemetry failure cannot manufacture an application failure."""
 
 
 @dataclass(frozen=True)
@@ -79,14 +85,16 @@ class Hooks:
     begin_submit: Callable[[Action, datetime], bool]
     verify: Callable[[Action, Observation | None, datetime], Verification]
     failure: Callable[[Action, retry_policy.Reason, datetime], None]
+    answer_reuse: Callable[[Action], int | None] | None = None
 
 
 class Runner:
-    def __init__(self, root, run_id, *, hooks=None, adapter=None):
+    def __init__(self, root, run_id, *, hooks=None, adapter=None, monotonic=None):
         if not isinstance(run_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", run_id):
             raise ValueError("Invalid runner ID")
         self.root = Path(root).resolve()
         self.run_id, self.hooks, self.adapter = run_id, hooks, adapter
+        self.monotonic = monotonic if monotonic is not None else time.monotonic
         self.state_ref = f"applications/runs/{run_id}/state.json"
 
     def _path(self, ref):
@@ -152,6 +160,12 @@ class Runner:
 
         atomic_json(self._path(self.state_ref), state)
 
+    def _metric(self, callback, *args, **kwargs):
+        try:
+            return callback(*args, **kwargs)
+        except Exception:
+            raise MetricsUnavailable("metrics_unavailable") from None
+
     def _new(self, state, kind, app=None, remaining=None, reason=None):
         return self._action({"kind": kind, "run_id": self.run_id,
             "sequence": state["sequence"] + 1, "application_id": app,
@@ -171,13 +185,14 @@ class Runner:
         if reason:
             raise budgets.BudgetStop(reason)
         saved = self._budget(state, current, frozen, reserved_sequence=action.sequence if begun else None)
+        record = None
         if action.application_id and not begun:
             record = next(r for r in queue.records if r["application_id"] == action.application_id)
             limit = min(budgets.retry_limit(self.root, record), frozen["work_budget"]["max_retries"])
             decision = retry_policy.check_retry(record, now, limit)
             if decision.decision != retry_policy.Decision.ELIGIBLE:
                 raise budgets.BudgetStop("retry_" + decision.decision.value)
-        return saved, current, frozen
+        return saved, current, frozen, record
 
     def _policy(self, state, queue, now):
         """Use existing accounting/identity semantics, never a mutable quota counter."""
@@ -233,6 +248,7 @@ class Runner:
         if not isinstance(verdict, Verification) or verdict.disposition not in {"verified", "not_executed", "unresolved"}:
             raise ValueError("Invalid runner verification")
         if verdict.disposition == "unresolved":
+            self._metric(metrics.reconcile, self.root, self.run_id, action.sequence, "unresolved")
             return "unresolved"
         path = self._path(verdict.evidence_ref)
         if not path.is_file() or path.stat().st_size == 0:
@@ -242,6 +258,9 @@ class Runner:
             progress = batches.batch_progress(queue.records, queue.batch_id, queue.target, queue.category_targets)
             if action.application_id not in progress["exclusions"]["confirmed"]:
                 raise ValueError("Submit verification requires a durable confirmation")
+        reuse = (self._metric(self.hooks.answer_reuse, action) if self.hooks.answer_reuse is not None
+                 and action.kind == Kind.PREPARE and verdict.disposition == "verified" else None)
+        self._metric(metrics.reconcile, self.root, self.run_id, action.sequence, verdict.disposition, answer_reuse=reuse)
         if verdict.disposition == "verified":
             state["checkpoint"] = {"action": action.as_dict(), "verified_at": now.isoformat(),
                                    "evidence_ref": verdict.evidence_ref}
@@ -257,7 +276,11 @@ class Runner:
         self.hooks.recover(self.run_id, now)
         if state["pending"] is not None:
             pending = self._action(state["pending"]["action"])
-            if self._verified(state, pending, None, now) == "unresolved":
+            try:
+                verified = self._verified(state, pending, None, now)
+            except MetricsUnavailable:
+                return state, self._new(state, Kind.HANDOFF, pending.application_id, reason="metrics_unavailable")
+            if verified == "unresolved":
                 return state, self._new(state, Kind.HANDOFF, pending.application_id,
                     reason="submission_uncertain" if pending.kind == Kind.SUBMIT else "unverified_action")
         queue = self.hooks.queue(self.run_id, now)
@@ -367,7 +390,7 @@ class Runner:
                     # The guard can take time or tighten settings. Submit gets a
                     # fresh deadline/quota/retry/budget check before its claim.
                     now = batches.validate_event_time(clock())
-                    budget, current, frozen = self._boundary(state, action, now)
+                    budget, current, frozen, record = self._boundary(state, action, now)
                 except budgets.BudgetStop as exc:
                     state["last_result"] = str(exc)
                     self._save(state)
@@ -382,9 +405,15 @@ class Runner:
                              last_result="pending")
                 self._save(state)  # Failure here must prevent ALL adapter calls.
                 budgets.reserve(self.root, self.run_id, budget, action.sequence, current, frozen)
+                blocker = (record or {}).get("blocker") or {}
+                retry_reason = blocker.get("reason")
+                retry_count = ((record or {}).get("retry_counts") or {}).get(retry_reason, 0)
                 failure_reported = False
                 reason = retry_policy.Reason.SUBMISSION_UNCERTAIN if action.kind == Kind.SUBMIT else retry_policy.Reason.UNSUPPORTED
                 try:
+                    self._metric(metrics.reserve, self.root, self.run_id, action.sequence, action.kind.value,
+                        action.application_id, now, retry_reason=retry_reason if retry_count else None,
+                        retry_count=retry_count)
                     if action.kind == Kind.SUBMIT and self.hooks.begin_submit(action, now) is not True:
                         raise ValueError("Submit was not authorized")
                     if action.kind == Kind.SUBMIT:
@@ -392,28 +421,41 @@ class Runner:
                         # click but retain the claim/pending for reconciliation.
                         now = batches.validate_event_time(clock())
                         self._boundary(state, action, now, begun=True)
-                    observation = self.adapter(action)
+                    started = self.monotonic()
+                    try:
+                        observation = self.adapter(action)
+                    except Exception:
+                        self._metric(metrics.observe, self.root, self.run_id, action.sequence,
+                            self.monotonic() - started, failure_reason=reason.value, failed=True)
+                        raise
+                    duration = self.monotonic() - started
                     if not isinstance(observation, Observation):
+                        self._metric(metrics.observe, self.root, self.run_id, action.sequence, duration,
+                                        failure_reason=reason.value, failed=True)
                         raise ValueError("Invalid runner observation")
-                    budgets.observe(self.root, self.run_id, budget, action.sequence, observation.usage)
                     if observation.failure is not None:
                         reason = (retry_policy.Reason.SUBMISSION_UNCERTAIN if action.kind == Kind.SUBMIT
                                   else retry_policy.Reason(observation.failure))
+                    budgets.observe(self.root, self.run_id, budget, action.sequence, observation.usage)
+                    self._metric(metrics.observe, self.root, self.run_id, action.sequence, duration,
+                        usage=observation.usage, failure_reason=reason.value if observation.failure is not None else None)
+                    if observation.failure is not None:
                         # A callback can commit its mutation and then fail while
                         # exporting. Never report the same observation twice.
                         failure_reported = True
                         self.hooks.failure(action, reason, now)
                     verified = self._verified(state, action, observation, batches.validate_event_time(clock()))
-                except Exception:
+                except Exception as exc:
                     # Do not store provider text or automatically replay any step.
                     # A verified checkpoint write may itself have failed. Restore
                     # the last durable state rather than clearing its pending step.
                     state = self._load()
-                    state["last_result"] = reason.value
+                    handoff = "metrics_unavailable" if isinstance(exc, MetricsUnavailable) else reason.value
+                    state["last_result"] = handoff
                     self._save(state)
-                    if not failure_reported:
+                    if not failure_reported and not isinstance(exc, MetricsUnavailable):
                         self.hooks.failure(action, reason, batches.validate_event_time(clock()))
-                    results.append(self._manual(action, reason.value))
+                    results.append(self._manual(action, handoff))
                     break
                 results.append(action if verified == "verified" else self._manual(action,
                     "unverified_action" if verified == "unresolved" else "not_executed"))

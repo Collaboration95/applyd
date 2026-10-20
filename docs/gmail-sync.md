@@ -7,8 +7,9 @@ lookup, network, calendar, send, reply, delete, or thread-label operation exists
 
 ## Workspace CLI integration
 
-The parent-owned `workspace.py` command is `mail-sync --file local-export.json`.
-The exact hook is:
+The integrated `workspace.py` command is `mail-sync --file local-export.json`.
+The command runs under the existing workspace writer lock and refreshes derived
+exports after a successful sync. The underlying importer contract is:
 
 ```python
 from mail_import import read_export, sync_local
@@ -21,12 +22,12 @@ with writer(root):
         result = finish_mutation(root, result, deferred=args.defer_export)
 ```
 
-Integrate this branch inside the existing lock instead of acquiring a second
-lock there. `sync_local(root, messages, now)` does not acquire a lock or export
-anything itself. The parent owns derived export recovery/index refresh. Do not
-print records, planner results, queue contents, exports, exception tracebacks,
-or adapter responses. `MailImportError` messages are fixed codes suitable for
-CLI errors. The sync result contains only `status` and numeric `counts`:
+`sync_local(root, messages, now)` does not acquire a lock or export anything
+itself. The workspace command calls it while holding the existing lock, then
+refreshes derived exports for a successful sync. The CLI prints the bounded
+summary only, not records, planner results, queue contents, exports, exception
+tracebacks, or adapter responses. `MailImportError` messages are fixed codes
+suitable for CLI errors. The sync result contains only `status` and numeric `counts`:
 `received`, `outcomes`, `contacts`, `unrelated`, `duplicates`, `recovered`,
 `queued`. `received` counts supplied entries, including duplicates; other
 counts describe unique messages. `queued` is the total unresolved queue.
@@ -88,7 +89,8 @@ messages and saved event IDs before planning. A crash after recording an event
 but before updating the ledger therefore reuses the event instead of appending
 another one, even if recording time or follow-up policy has changed. A crash
 before an event write retries the staged message. Writes flush files and parent
-directories before returning. The parent must retain the writer lock throughout.
+directories before returning. The workspace command retains the writer lock
+through sync and export refresh.
 
 The cursor may advance beyond queued messages because their full evidence stays
 in the private archive and queue. Calling `sync_local(root, [], now)` retries

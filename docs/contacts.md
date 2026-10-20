@@ -81,8 +81,9 @@ changing any visible identity field or source produces a distinct ID.
 This is exact identity deduplication, not cross-source person matching.
 
 `ContactError` subclasses `ValueError`, with `field`, `reason`, and `exit_code=2`.
-For capture, wrap as `ListingError(exc.field, exc.reason)` and exit 2 before
-creating directories, descriptions, indexes, records, or exports.
+For capture, `normalize_listing_contacts` wraps failures as
+`ListingError(exc.field, exc.reason)`. The CLI exits 2 and does not persist the
+new listing or refresh its exports on invalid contact input.
 
 ### Capture and listing input
 
@@ -93,11 +94,9 @@ capture times in explicit contact inputs stay null at this stage. No contact
 source is added to the listing's top-level source values. The extractor already
 returns a supported visible `hiring_team` card; its output needs no change.
 
-The parent must import `normalize_listing_contacts` into `workspace.py` and
-call it inside `capture(root, data, now, ...)`, after copying/checking input but
-before any filesystem write (including index creation, description writes,
-directory creation, record persistence, or export). This also covers direct
-internal callers; changing only the CLI stdin/file branch is insufficient:
+`workspace.py` calls `normalize_listing_contacts(data, now)` inside
+`capture(root, data, now, ...)`, after the shared work guard and before capture
+persists the new listing. This covers both CLI and direct internal callers:
 
 ```python
 data = normalize_listing_contacts(data, now)
@@ -112,20 +111,25 @@ wins. No-card inputs persist `contacts: []`. The original `hiring_team` object
 is retained for compatibility. Failures are wrapped as field-specific
 `ListingError` with exit code 2. The helper has no filesystem or wall-clock access.
 
-Keep the existing CLI call to `validate_listing` for both `--stdin` and `--file`.
-Persist the resulting `contacts` along with the other normalized record fields;
-do not discard it in a record allowlist. Allow `contacts` in any parent-owned
-publication/export schema or privacy checker that enumerates record fields.
+The CLI calls `validate_listing` for both `--stdin` and `--file`. Capture
+normalization preserves the resulting `contacts` in the saved record. The
+dashboard and CSV exports include normalized contacts under their existing
+publication schemas; this does not establish that supplied facts were actually
+visible in a browser or email source.
 
-No top-level raw confirmation-email field is required for listing capture.
-The parent email-sync/CLI caller can provide its already available confirmation
-text via the `email_text` argument and preserve its existing evidence reference.
-An incoming email without the corresponding supplied text must fail; matching
-a `source` label alone is insufficient. Do not load private email from here.
+No top-level raw confirmation-email field is required for listing capture. A
+caller adding a contact may supply confirmation text through the
+`contact_change(..., email_text=...)` interface; the `contact` CLI exposes this
+as `--email-evidence`. An email contact without matching supplied text fails;
+a `source` label alone is insufficient. The contact helper does not load email.
 
 ### CLI, export, and dashboard
 
-The integrated `workspace.py contact --id ... --add <contact.json>` and `--remove <contact-id>` commands load the record under the writer lock, validate the requested change and refresh exports after durable persistence. Additions use already available JD text or an explicitly supplied confirmation source via `--email-evidence`. Removal matches one normalized contact ID. There is no verification flag.
+The integrated `workspace.py contact --id ... --add <contact.json>` and
+`--remove <contact-id>` commands run under the workspace writer lock, validate
+the requested change, persist it, and refresh exports. Additions use saved JD
+text or explicitly supplied confirmation text via `--email-evidence`.
+Removal matches one normalized contact ID. There is no verification flag.
 
 `export_dashboard` preserves `contacts` as structured objects in both JSON and
 the classic-script snapshot. The details dialog displays the visible facts,
@@ -141,7 +145,9 @@ The integrated CSV writer stores a `contacts` column using stable JSON before or
 row["contacts"] = contacts_json(record.get("contacts"))
 ```
 
-Capture normalization, the CSV column, add/remove commands and the explicit publication allowlists are integrated. Contact validation does not change application submission history or invent missing facts.
+Capture normalization, the CSV column, add/remove commands and publication
+exports are integrated. Contact validation does not change application
+submission history or invent missing facts.
 
 ## Verification
 

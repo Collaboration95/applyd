@@ -3,8 +3,10 @@
 `scripts/safety.py` uses only the Python standard library. All paths are relative
 to the explicitly selected private workspace; no module import starts a browser,
 reads a profile, or sends a notification. Tests create temporary synthetic data.
-The parent owns extractor, `seen.sh`, workspace/skill wiring and the publication
-allowlist. These three new files do not install those hooks by themselves.
+`workspace.py` and `runner_workspace.py` connect the helpers to workspace
+operations. `schedule_run.py` checks safety before creating a scheduled run and
+before each runner step; `scripts/seen.sh` provides the shell-only lookup refusal
+described below. These hooks do not themselves inspect a live browser page.
 
 ## Python API
 
@@ -64,47 +66,37 @@ end the loop, and obtain a real screenshot through the adapter when available;
 call `stop_run` again to fill the missing reference without replacing the stop.
 `SafetyError` and filesystem errors must both fail closed at every caller.
 
-## Exact parent hooks
+## Integrated workspace hooks
 
-1. Resolve the workspace and current run ID before any new application work.
-   Call `guard(root, run_id, now, command)` before seen lookups, listing capture,
-   preparation, preflight and any browser work. Require a run ID for these new
-   safety hooks; do not derive a changing ID per retry or bypass legacy commands.
-   A scheduled run must guard before settings run creation/browser startup.
-2. On every extractor/current-page snapshot, and before any form click, call
-   `detect(page_text, current_url)`. When it matches, capture the current page
-   using the browser adapter, pass the resulting private screenshot reference to
-   `stop_run(..., "account_safety", ..., evidence, notify=callback)`, and end the
-   entire run. Do not capture the listing or attempt the next job. If capture is
-   unavailable, call `stop_run` with missing evidence and handle its typed blocker.
-   The JS extractor should return the typed detector signal to the Python parent;
-   it must not invent a screenshot field or mark an application submitted.
-3. Within the existing single-writer submit section, guard again immediately
-   before Submit, alongside settings, resume, answer and duplicate checks. A stop
-   discovered after preflight must prevent the click. Stop policy cannot undo a
-   click already sent; reconcile any uncertain submission using real evidence.
-4. Catch `SafetyBlocked` before general `SafetyError`; record its public reason
-   and return a refusal (CLI exit 2). A local interactive runner that explicitly
-   opted into notifications can call `notify_stop(root, now, local_notification)`
-   when handling a guard refusal. Do not put this side effect inside imports or
-   the generic guard. Historical confirmation logging, exports, state inspection
-   and explicit reconciliation must remain available without this new-work gate.
-5. Connect an explicit user-invoked `resume-stop` or safety `reconcile` command to
-   `resume_stop(root, originating_run_id, now, evidence, command)` (`reconcile`
-   is an equivalent function). Evidence must contain non-empty `operator` and
-   `note` strings describing the operator's review. The parent must only supply
-   these from the actual explicit operator command, never automatically or from
-   listing text. Remove STOP first; its presence still forbids reconciliation.
-   Removing STOP by itself, choosing another run ID, or passing `resume-stop` as
-   the guard's command never clears an incident. The resolution is preserved in
-   the incident ledger. Start subsequent work with a new run ID so the original
-   stopped run remains an accurate historical record.
+`workspace.py` calls `safety.guard` through `work_guard` on guarded workspace
+operations, and `runner_workspace.py` calls that gate from the runner's
+mandatory per-action guard. The gate also recovers interrupted Submit state and
+checks the browser-session retry guard where applicable. `scripts/seen.sh`
+checks STOP and both safety sentinels using shell built-ins before reading its
+lookup index; when STOP is present, it persists `SAFETY_STOP_PENDING` and exits
+2. A later Python guard materializes or restores the durable incident state.
+
+The `safety-check` CLI accepts a supplied JSON file containing page text and URL,
+runs `detect`, and, on a detection, calls `stop_run` with the optional screenshot
+reference. It does not capture a screenshot or connect to a browser. The helper
+cannot establish that supplied page text, URL, or screenshot came from the live
+page. A real browser adapter must provide genuine current-page observations and
+screenshot evidence before this path can be treated as live validation.
+
+On guarded refusals, `workspace.py` attempts the local notification callback;
+the generic `guard` persists safety state without delivering notifications. The explicit
+`workspace.py resume-stop --run-id ... --operator ... --note ...` command calls
+`resume_stop` with the operator's supplied review evidence. STOP must first be
+removed; removing it alone, choosing another run ID, or using `resume-stop` as a
+guard command does not resolve an incident. Resolution remains in the incident
+ledger, and later work should use a new run ID. Historical confirmation logging,
+exports, state inspection and explicit reconciliation remain available.
 
 ## Python-free seen hook
 
-The parent should place this shell-only refusal before any lookup. It uses shell
-builtins and preserves a pending record even if STOP is removed before Python
-next runs. It neither invokes Python nor sends notifications:
+The integrated `scripts/seen.sh` uses this shell-only refusal before any lookup.
+It uses shell built-ins and preserves a pending record even if STOP is removed
+before Python next runs. It neither invokes Python nor sends notifications:
 
 ```sh
 if [ -e "$root/applications/STOP" ] || [ -L "$root/applications/STOP" ] ||
@@ -120,14 +112,14 @@ if [ -e "$root/applications/STOP" ] || [ -L "$root/applications/STOP" ] ||
 fi
 ```
 
-On the next Python command, call `guard` before dispatching new work, using the
+On the next guarded Python workspace or runner operation, the guard uses the
 same run ID retained by the runner (`APPLYD_RUN_ID` or an explicit CLI argument).
 This materializes the incident and run record; a pending marker itself blocks
 work even after STOP removal. A shell-only caller cannot deliver a notification
-or write the full timestamped run JSON; the owning runner must handle the refusal
-and invoke the local Python guard/notification path. Do not claim shell refusal
-alone delivered a notification. At startup the Python guard also checks the
-incident ledger and restores a missing sentinel after an interrupted write.
+or write the full timestamped run JSON; the guarded Python path records the
+refusal and attempts its configured local notification. Do not claim shell
+refusal alone delivered a notification. At startup the Python guard also checks
+the incident ledger and restores a missing sentinel after an interrupted write.
 The shell fast path trusts the durable sentinel; do not delete it manually.
 
 ## Private durable artifacts
@@ -150,10 +142,10 @@ Atomic JSON replacement, file/directory fsync and an advisory lock protect norma
 process races and interrupted writes. Corrupt state blocks work. This is a local
 safety gate, not a security boundary against someone rewriting the workspace.
 
-All these artifacts stay private under the existing publication deny rule. Public
-logs/notifications may contain the stable stop reason and opaque IDs, never the
-private incident dict, screenshot path/contents, page text or URL query tokens.
-The parent must separately allowlist only the three generic implementation files.
+All these artifacts stay private under the existing publication deny rule.
+Public logs/notifications may contain the stable stop reason and opaque IDs,
+never the private incident dict, screenshot path/contents, page text or URL query
+tokens. The helper does not itself publish these artifacts.
 
 ## Notification delivery
 

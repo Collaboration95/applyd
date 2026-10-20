@@ -75,7 +75,7 @@ macOS and Linux with POSIX `fcntl` support. Native Windows is not supported; use
 
 ### Which agent skills are included?
 
-The repository includes `/apply-linkedin` and `/outreach`. The browser and draft-only mail adapters come from the authorized agent runtime; the default CLI returns a typed handoff when an adapter is missing. Read-only mail sync and the additional lean skills remain in blocked draft PRs.
+The repository includes `/apply-linkedin`, `/answer-questions`, `/cleanup-run`, `/gmail-sync` and `/outreach`. The browser and draft-only mail adapters come from the authorized agent runtime; missing adapters return typed handoffs. Read-only mail sync accepts supplied local exports. See [lean workflows](docs/lean-workflows.md), [mail setup](docs/gmail-sync.md) and [bounded scheduled runs](docs/schedule.md).
 
 ## Project
 

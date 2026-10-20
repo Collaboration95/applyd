@@ -40,15 +40,16 @@ GENERIC_FILES = frozenset({
     "scripts/computer_fallback.py", "docs/computer-use.md", "tests/fixtures/fallback-form.html",
     "scripts/runner.py", "scripts/runner_workspace.py", "docs/runner.md",
     "scripts/budgets.py", "docs/budgets.md",
+    "scripts/schedule_run.py", "docs/schedule.md",
     "scripts/metrics.py", "scripts/reports.py", "docs/metrics.md", "docs/reports.md",
     "scripts/form_handlers.js", "docs/forms.md", "tests/fixtures/application-form.html",
     "scripts/outreach.py", "scripts/outreach_workspace.py", "docs/outreach.md", ".claude/skills/outreach/SKILL.md",
-    # Audited generic artifacts in the open read-only mail review branch.
+    # Audited generic read-only mail artifacts.
     "scripts/gmail_sync.py", "scripts/mail_import.py", "docs/gmail-sync.md",
     ".claude/skills/gmail-sync/SKILL.md",
     "scripts/demo.py", "scripts/demo_gif.py", "scripts/screenshots.sh", "docs/demo.md",
     "demo/applications.json",
-    # Audited generic artifacts in the open lean-workflow review branch.
+    # Audited generic lean-workflow artifacts.
     ".claude/skills/answer-questions/SKILL.md", ".claude/skills/cleanup-run/SKILL.md",
     "docs/batch.example.json", "docs/lean-workflows.md",
     "tests/fixtures/linkedin-easy-card.html", "tests/fixtures/linkedin-no-card.html", "tests/fixtures/linkedin-external.html",

@@ -11,4 +11,4 @@ Use only an explicitly authorized read-only mailbox adapter exposing search, lis
 4. Read only the count summary and typed attention reasons; do not copy mail content, contact details, application IDs or private paths to public reports.
 5. Retry an empty local export to re-evaluate retained queued messages after their blockers change. Recover derived exports with `workspace.py export`; never duplicate an outcome to fix an export failure.
 
-Real-inbox verification remains a manual prerequisite documented in `docs/gmail-sync.md`; local fixtures do not prove it.
+Before live use, configure an authorized read-only adapter and perform the manual checks in `docs/gmail-sync.md`; local fixtures do not prove live behavior.

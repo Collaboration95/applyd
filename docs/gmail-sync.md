@@ -107,7 +107,7 @@ rather than silently dropping the queued ID. Full queued evidence is also
 retained by the planner. Persist supplied adapter message reads through
 `sync_local` under the same writer lock. No real adapter is configured here.
 
-## Verification and remaining blocker
+## Verification and live setup
 
 ```sh
 python3 -m unittest discover -s tests -p 'test_*mail*.py' -v
@@ -119,11 +119,4 @@ confirmations, ambiguous queues surviving cursor advances, duplicates, restarts,
 interruptions before event writes and between event and ledger writes, partial
 batches, recruiter contact replay, private evidence, and safe summary output.
 
-**BLOCKED: issue #17 still requires a manual check on a real inbox.** This work
-did not access an inbox, credentials, calendar, connectors, or the network. The
-blocker remains `credential_required / live_verification_requires_credentials`.
-A future explicitly authorized read-only session must verify adapter message
-shape/pagination, search coverage at cursor boundaries, queued-ID retrieval,
-actual employer matching and confirmation evidence, and repeat-run event
-identity without publishing private content. Keep the issue/draft PR open until
-that manual requirement is satisfied; synthetic tests do not satisfy it.
+The maintainer waived a real-inbox check as a merge and issue-closure prerequisite. That check was not performed. Local import is available; an authorized read-only adapter/session remains necessary for live inbox use. Before enabling it, verify message shape and pagination, cursor boundaries, queued-ID retrieval, actual matching and confirmation evidence, and repeat-run event identity without publishing private content. Fixture results do not establish those live guarantees.

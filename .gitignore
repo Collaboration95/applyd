@@ -239,6 +239,17 @@ __pycache__/
 !/docs/release.md
 
 # Audited generic additions retained from this blocked draft.
+# Generic lean question/cleanup workflows and a synthetic batch shape.
+!/.claude/skills/answer-questions/
+/.claude/skills/answer-questions/*
+!/.claude/skills/answer-questions/SKILL.md
+!/.claude/skills/cleanup-run/
+/.claude/skills/cleanup-run/*
+!/.claude/skills/cleanup-run/SKILL.md
+!/docs/batch.example.json
+!/docs/lean-workflows.md
+
+# Audited generic additions retained from this blocked draft.
 # Generic read-only mail planner, local import and synthetic evidence fixtures.
 !/scripts/gmail_sync.py
 !/scripts/mail_import.py

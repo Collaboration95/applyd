@@ -62,8 +62,7 @@ CLI commands which would acquire it. The parent remains responsible for exports.
    Run the existing answer-change/requeue workflow before returning records when
    answers have changed. Only `workspace.requeue_answers` may establish scoped,
    fresh answer resolution and persist `resumed_from_answers=True`; do not infer
-   resolution from a cleared UI question. Retry budgets remain the existing
-   workspace maximum of 3 until its configuration integration changes.
+   resolution from a cleared UI question. Retry limits use `work_budget.max_retries`, taking the minimum current, frozen and saved budget; three is the default.
 4. `guard(action, now) -> None`: raise on any refusal; only `None` succeeds.
    Immediately before **every** adapter call, call `workspace.work_guard` and
    `workspace.browser_retry_guard`, plus `retry_guard` for an application.
@@ -166,5 +165,5 @@ Create the configured run with `workspace.py run-start --id example-run`, then u
 CLI dispatch lets the controller own its writer lock and rebuilds dirty exports separately; callbacks never reacquire that lock. Run only focused synthetic verification during this integration:
 
 ```sh
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p test_runner.py -v
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_runner*.py' -v
 ```

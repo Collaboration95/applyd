@@ -25,3 +25,9 @@
 ## Roadmap source
 
 `roadmap/backlog-v2.json` is the source for issues. `python3 roadmap/render.py` renders local drafts, and `python3 roadmap/create_github.py` creates any missing issues idempotently. Edit the JSON, not the generated Markdown.
+
+## Regression gate
+
+The GitHub workflow uses an existing Ubuntu runner, preinstalled `gh`, Python and Node. GitHub access goes through authenticated `gh` in a read-only checkout step; the test steps receive no token. It installs no packages or services. The Python suite includes one synthetic release scenario plus fresh init/doctor/demo checks. The JavaScript suite covers the static dashboard, current-page extraction and semantic form adapters. The publication gate scans the index and reachable history.
+
+For the focused release scenario, run `python3 -m unittest discover -s tests -p test_release_smoke.py -v`. It never opens an authenticated browser, submits an application or contacts an employer. Test all browser/provider boundaries with fixtures and stubs.

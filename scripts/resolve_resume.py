@@ -6,6 +6,7 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from workspace_config import select_root
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -118,12 +119,14 @@ def resolve(registry, scope, purpose, now, root=ROOT):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--workspace", type=Path)
     parser.add_argument("--scope", required=True)
     parser.add_argument("--purpose", choices=("reference", "application"), default="application")
     args = parser.parse_args()
+    root = select_root(args.workspace)
     try:
-        registry = json.loads((ROOT / "resumes/registry.json").read_text())
-        result = resolve(registry, args.scope, args.purpose, datetime.now(timezone.utc))
+        registry = json.loads((root / "resumes/registry.json").read_text())
+        result = resolve(registry, args.scope, args.purpose, datetime.now(timezone.utc), root)
     except (ValueError, KeyError, OSError, TypeError) as exc:
         parser.exit(1, f"BLOCKED: {exc}\n")
     print(json.dumps(result, indent=2))

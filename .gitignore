@@ -167,3 +167,10 @@ __pycache__/
 !/docs/retries.md
 !/tests/test_retry_policy.py
 !/tests/test_retry_integration.py
+
+# Generic listing eligibility and synthetic scope/wording boundary checks.
+!/scripts/eligibility.py
+!/docs/eligibility.md
+!/tests/test_eligibility.py
+!/tests/test_eligibility_facts.py
+!/tests/test_eligibility_integration.py

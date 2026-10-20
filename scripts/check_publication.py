@@ -34,6 +34,7 @@ GENERIC_FILES = frozenset({
     "scripts/outcomes.py", "scripts/batches.py", "docs/outcomes.md", "docs/batches.md",
     "scripts/reviewer.py", "docs/reviewer.md",
     "scripts/retry_policy.py", "docs/retries.md",
+    "scripts/eligibility.py", "docs/eligibility.md",
     "scripts/demo.py", "scripts/demo_gif.py", "scripts/screenshots.sh", "docs/demo.md",
     "demo/applications.json",
     # Audited generic artifacts in the open lean-workflow review branch.

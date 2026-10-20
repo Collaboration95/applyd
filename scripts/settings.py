@@ -31,6 +31,7 @@ DEFAULTS = {
     "resume_scope": None,
     "role_rules": {},
     "follow_up_days": 14,
+    "computer_use": {"enabled": False, "step_budget": 6},
 }
 # Required fields of the original immutable schema-1 run snapshot. New optional
 # policy fields must not invalidate old snapshots or change their saved hashes.
@@ -131,6 +132,15 @@ def _validate(raw):
         _invalid("mode", "apply, save_only or dry_run")
     if type(result["easy_apply_only"]) is not bool:
         _invalid("easy_apply_only", "a boolean")
+    computer = result["computer_use"]
+    if not isinstance(computer, dict) or set(computer) - {"enabled", "step_budget"}:
+        _invalid("computer_use", "an object with enabled/step_budget only")
+    computer = {"enabled": False, "step_budget": 6, **computer}
+    if type(computer["enabled"]) is not bool:
+        _invalid("computer_use.enabled", "a boolean")
+    if type(computer["step_budget"]) is not int or computer["step_budget"] < 0:
+        _invalid("computer_use.step_budget", "a non-negative integer")
+    result["computer_use"] = computer
     for key in ("daily_cap", "per_run_cap", "per_run_minutes", "max_required_years", "follow_up_days"):
         value = result[key]
         if value is not None and (type(value) is not int or value < 0):
@@ -178,6 +188,11 @@ def _validate(raw):
     except (ValueError, TypeError) as exc:
         raise SettingsError("settings.json: values must be finite JSON data") from exc
     return result
+
+
+def validate_settings(raw):
+    """Validate a policy object and return an independent, default-filled copy."""
+    return _validate(raw)
 
 
 def load_settings(root):

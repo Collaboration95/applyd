@@ -29,6 +29,8 @@ GENERIC_FILES = frozenset({
     "scripts/scope_guard.py", ".claude/skills/apply-linkedin/SKILL.md",
     "scripts/setup_workspace.py", "docs/setup.md",
     "scripts/cleanup.py", "scripts/cleanup_tabs.sh", "docs/cleanup.md",
+    ".claude/skills/answer-questions/SKILL.md", ".claude/skills/cleanup-run/SKILL.md",
+    "docs/batch.example.json", "docs/lean-workflows.md",
     "tests/fixtures/linkedin-easy-card.html", "tests/fixtures/linkedin-no-card.html", "tests/fixtures/linkedin-external.html",
     "dashboard/index.html", "dashboard/app.js", "dashboard/runs.js",
     "dashboard/style.css", "dashboard/README.md",

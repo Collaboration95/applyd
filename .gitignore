@@ -121,3 +121,13 @@ __pycache__/
 !/scripts/cleanup_tabs.sh
 !/tests/test_cleanup.py
 !/docs/cleanup.md
+
+# Generic lean question/cleanup workflows and a synthetic batch shape.
+!/.claude/skills/answer-questions/
+/.claude/skills/answer-questions/*
+!/.claude/skills/answer-questions/SKILL.md
+!/.claude/skills/cleanup-run/
+/.claude/skills/cleanup-run/*
+!/.claude/skills/cleanup-run/SKILL.md
+!/docs/batch.example.json
+!/docs/lean-workflows.md

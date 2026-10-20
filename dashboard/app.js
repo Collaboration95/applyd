@@ -1,11 +1,11 @@
 (() => {
   "use strict";
   const $ = (id) => document.getElementById(id);
-  const TZ = "Asia/Singapore";
+  let TZ = "UTC";
   const LABELS = { discovered: "Found", preparing: "Preparing", awaiting_answer: "Needs an answer", ready: "Ready", submitted: "Applied", submission_uncertain: "Check submission", failed: "Failed", skipped: "Skipped", rejected: "Rejected", interview: "Interview", withdrawn: "Withdrawn" };
-  const timeFormat = new Intl.DateTimeFormat("en-SG", { timeZone: TZ, hour: "2-digit", minute: "2-digit", hour12: false });
-  const dateFormat = new Intl.DateTimeFormat("en-SG", { timeZone: TZ, day: "numeric", month: "short", year: "numeric" });
-  const state = { data: { applications: [] }, query: "", status: "" };
+  let timeFormat = new Intl.DateTimeFormat("en-SG", { timeZone: TZ, hour: "2-digit", minute: "2-digit", hour12: false });
+  let dateFormat = new Intl.DateTimeFormat("en-SG", { timeZone: TZ, day: "numeric", month: "short", year: "numeric" });
+  const state = { data: { applications: [] }, query: "", status: "", skipped: 0, runNumbers: {} };
   const validDate = (value) => Number.isFinite(Date.parse(value));
   const dateText = (value) => validDate(value) ? `${dateFormat.format(new Date(value))}, ${timeFormat.format(new Date(value))}` : "Time not recorded";
   function el(tag, text, className) {
@@ -24,32 +24,47 @@
     return a;
   }
   function pill(status) { return el("span", LABELS[status] || status || "Not recorded", `status-pill status-${Object.hasOwn(LABELS, status) ? status : "unknown"}`); }
+  function refreshStatusOptions() {
+    const select = $("status"), selected = state.status;
+    const statuses = window.JobRuns.availableStatuses(state.data.applications).sort((a, b) => (Object.keys(LABELS).indexOf(a) + 1 || Infinity) - (Object.keys(LABELS).indexOf(b) + 1 || Infinity) || a.localeCompare(b));
+    select.replaceChildren(new Option("All statuses", ""), ...statuses.map((status) => new Option(LABELS[status] || status, status)));
+    select.value = statuses.includes(selected) ? selected : "";
+    state.status = select.value;
+  }
+  function showDataIssue() {
+    const banner = $("error");
+    banner.textContent = state.skipped ? `Skipped ${state.skipped} malformed ${state.skipped === 1 ? "record" : "records"}; valid applications are still shown.` : "";
+    banner.hidden = !state.skipped;
+  }
   function loadData(payload) {
     if (!payload || !Array.isArray(payload.applications)) throw new Error("Choose an exported application JSON file.");
-    const seen = new Set();
-    const applications = payload.applications.map((app) => {
-      if (!app || !["id", "company", "title", "status"].every((key) => typeof app[key] === "string")) throw new Error("An application is missing its ID, company, title or status.");
-      if (seen.has(app.id)) throw new Error("The JSON contains duplicate application IDs.");
-      seen.add(app.id);
-      return { ...app, events: Array.isArray(app.events) ? app.events : [], submissions: Array.isArray(app.submissions) ? app.submissions : [] };
-    });
-    state.data = { ...payload, applications };
-    $("error").hidden = true;
+    TZ = typeof payload.timezone === "string" ? payload.timezone : "UTC";
+    try { new Intl.DateTimeFormat("en", { timeZone: TZ }); } catch { TZ = "UTC"; }
+    timeFormat = new Intl.DateTimeFormat("en-SG", { timeZone: TZ, hour: "2-digit", minute: "2-digit", hour12: false });
+    dateFormat = new Intl.DateTimeFormat("en-SG", { timeZone: TZ, day: "numeric", month: "short", year: "numeric" });
+    const result = window.JobRuns.normalizeApplications(payload.applications);
+    state.data = { ...payload, applications: result.applications };
+    state.skipped = result.skipped;
+    refreshStatusOptions();
+    showDataIssue();
     render();
   }
   function render() {
     const allRuns = window.JobRuns.groupRuns(state.data.applications);
+    try { state.runNumbers = { ...JSON.parse(localStorage.getItem("applyd.runNumbers") || "{}"), ...state.runNumbers }; } catch {}
+    state.runNumbers = window.JobRuns.assignRunNumbers(allRuns, state.runNumbers);
+    try { localStorage.setItem("applyd.runNumbers", JSON.stringify(state.runNumbers)); } catch {}
     const query = state.query.trim().toLowerCase();
     const visible = allRuns.map((run) => ({ ...run, entries: run.entries.filter((entry) => {
       const app = entry.app;
-      return (!state.status || entry.status === state.status || app.status === state.status) && (!query || [app.title, app.company, entry.applied_by, app.location, entry.resume?.id, entry.resume?.file].filter(Boolean).join(" ").toLowerCase().includes(query));
+      return window.JobRuns.matchesCurrentStatus(app, state.status) && (!query || [app.title, app.company, entry.applied_by, app.location, entry.resume?.id, entry.resume?.file].filter(Boolean).join(" ").toLowerCase().includes(query));
     }) })).filter((run) => run.entries.length);
     $("runs").replaceChildren(...visible.map(runBlock));
     $("empty").hidden = visible.length > 0;
     $("empty-title").textContent = allRuns.length ? "No matching entries." : "No applications logged.";
     const sent = visible.reduce((count, run) => count + run.entries.filter((e) => e.kind === "submitted").length, 0);
     $("result-count").textContent = `${visible.length} ${visible.length === 1 ? "run" : "runs"} · ${sent} ${sent === 1 ? "application" : "applications"}`;
-    $("updated").textContent = state.data.generated_at ? `Updated ${dateText(state.data.generated_at)} SGT` : "Load application JSON to get started";
+    $("updated").textContent = state.data.generated_at ? `Updated ${dateText(state.data.generated_at)} ${TZ}` : "Load application JSON to get started";
   }
   function runBlock(run) {
     const section = el("section", null, "run"); section.dataset.runId = run.id;
@@ -113,15 +128,7 @@
     try {
       const files = [...event.target.files]; if (!files.length) return;
       const payloads = await Promise.all(files.map(async (file) => JSON.parse(await file.text())));
-      const merged = new Map();
-      for (const payload of payloads) {
-        if (!Array.isArray(payload.applications)) throw new Error("Choose exported application JSON files.");
-        for (const app of payload.applications) {
-          const old = merged.get(app.id);
-          if (!old || new Date(app.updated_at || 0) >= new Date(old.updated_at || 0)) merged.set(app.id, app);
-        }
-      }
-      loadData({ generated_at: payloads.map((p) => p.generated_at).filter(Boolean).sort().at(-1), applications: [...merged.values()] });
+      loadData(window.JobRuns.mergePayloads(payloads));
     } catch (error) { $("error").textContent = `Could not load JSON: ${error.message}`; $("error").hidden = false; }
     finally { event.target.value = ""; }
   });

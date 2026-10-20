@@ -227,6 +227,8 @@ def preflight(root, record, now):
     prepared = record.get("prepared")
     if not prepared:
         raise ValueError("Application has no prepared submission snapshot")
+    if record.get("submissions") or record.get("submission_intent"):
+        raise ValueError("Confirmed or unfinished submission requires reconciliation; never replay Submit")
     settings.check_submission(root, record, now)
     current = resolve(read(root / "resumes/registry.json"), prepared["scope"], "application", now, root)
     if current["id"] != prepared["id"]:
@@ -234,6 +236,60 @@ def preflight(root, record, now):
     if digest(root / prepared["exact_resume_copy"]) != prepared["sha256"] or digest(root / prepared["answers_path"]) != prepared["answers_sha256"]:
         raise ValueError("Prepared submission snapshot was modified")
     return {"application_id": record["application_id"], "ready": True, "resume_id": current["id"]}
+
+
+def begin_submit(root, application_id, observed_url, session_id, now):
+    """Reserve the browser and persist uncertainty before authorizing one click."""
+    record_path = root / "applications/records" / slug(application_id) / "record.json"
+    record = read(record_path)
+    if canonical_url(observed_url) != record["canonical_listing_url"]:
+        raise ValueError("observed_job_mismatch: browser job differs from the prepared application")
+    preflight(root, record, now)
+    keys = set(seen_index.identity_keys(record, canonical_url(record["listing_url"])))
+    for other in records(root):
+        if other.get("submissions") and keys.intersection(seen_index.identity_keys(other, canonical_url(other["listing_url"]))):
+            raise ValueError("duplicate_submission: a confirmation already exists")
+    claim_path = root / "applications/browser-claim.json"
+    claim_path.parent.mkdir(parents=True, exist_ok=True)
+    attempt_id = hashlib.sha256((application_id + record["prepared"]["answers_sha256"] + now.isoformat()).encode()).hexdigest()[:24]
+    claim = {"application_id": application_id, "attempt_id": attempt_id,
+             "session_id": slug(session_id), "observed_url": canonical_url(observed_url),
+             "occurred_at": now.isoformat()}
+    try:
+        fd = os.open(claim_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError as exc:
+        raise ValueError("browser_claimed: reconcile the existing writer/intent before retrying") from exc
+    with os.fdopen(fd, "w") as stream:
+        json.dump(claim, stream, sort_keys=True)
+        stream.flush()
+        os.fsync(stream.fileno())
+    record.update(status="submission_uncertain", status_updated_at=now.isoformat(), submission_intent=claim)
+    record["events"].append({"at": now.isoformat(), "status": "submission_uncertain", "reason": "submit_intent", "attempt_id": attempt_id})
+    atomic_json(record_path, record)
+    seen_index.update(root, record, canonical_url)
+    export_csv(root)
+    return {"application_id": application_id, "attempt_id": attempt_id, "click_authorized": True,
+            "on_interruption": "submission_uncertain; reconcile with evidence before retry"}
+
+
+def recover_submit(root, now):
+    """A crash in the claim/record window is uncertainty, never a new click."""
+    path = root / "applications/browser-claim.json"
+    if not path.exists():
+        return {"recovered": False}
+    claim = read(path)
+    record_path = root / "applications/records" / slug(claim["application_id"]) / "record.json"
+    record = read(record_path)
+    if record.get("submissions"):
+        path.unlink()
+        return {"recovered": True, "application_id": claim["application_id"], "requires_reconciliation": False}
+    else:
+        record.update(status="submission_uncertain", status_updated_at=now.isoformat(), submission_intent=claim)
+        if not any(e.get("attempt_id") == claim["attempt_id"] for e in record["events"]):
+            record["events"].append({"at": now.isoformat(), "status": "submission_uncertain", "reason": "recovered_intent", "attempt_id": claim["attempt_id"]})
+        atomic_json(record_path, record)
+        seen_index.update(root, record, canonical_url)
+    return {"recovered": True, "application_id": claim["application_id"], "requires_reconciliation": True}
 
 
 def capture(root, data, now):
@@ -335,6 +391,14 @@ def event(root, args, now):
     record.update(status=status, status_updated_at=now.isoformat())
     atomic_json(directory / "record.json", record)
     seen_index.update(root, record, canonical_url)
+    if details.get("confirmation_path") or details.get("reconciliation_path"):
+        claim_path = root / "applications/browser-claim.json"
+        if claim_path.exists() and read(claim_path).get("application_id") == args.id:
+            claim_path.unlink()
+        # Intent remains in history; a reconciled failure may be prepared afresh.
+        if record.get("submission_intent"):
+            record.pop("submission_intent")
+            atomic_json(directory / "record.json", record)
     export_csv(root)
     return {"application_id": args.id, "status": status}
 
@@ -407,6 +471,11 @@ def main():
     run.add_argument("--id", required=True)
     screen = commands.add_parser("screen", help="Check a result-card header before extraction or navigation")
     screen.add_argument("--file", type=Path, required=True)
+    begin = commands.add_parser("begin-submit")
+    begin.add_argument("--id", required=True)
+    begin.add_argument("--observed-url", required=True)
+    begin.add_argument("--session-id", required=True)
+    commands.add_parser("recover-submit")
     args = parser.parse_args()
     root = select_root(args.workspace)
     try:
@@ -460,6 +529,10 @@ def main():
                 data = read(args.file)
                 reason = settings.eligibility(data, policy)
                 result = capture(root, data, now) if reason else {"eligible": True}
+            elif args.command == "begin-submit":
+                result = begin_submit(root, args.id, args.observed_url, args.session_id, now)
+            elif args.command == "recover-submit":
+                result = recover_submit(root, now)
             else:
                 result = export_csv(root)
         print(json.dumps(result, indent=2, ensure_ascii=False))

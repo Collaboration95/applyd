@@ -7,26 +7,35 @@
   <link rel="stylesheet" href="style.css">
   <script defer src="data.js"></script>
   <script defer src="runs.js"></script>
+  <script defer src="control.js"></script>
   <script defer src="app.js"></script>
 </head>
 <body>
   <main class="journal">
-    <header class="topbar">
-      <h1>Application runs</h1>
-      <button id="refresh" class="quiet-button" type="button">↻ Refresh</button>
-    </header>
-
-    <section class="applications" aria-labelledby="activity-title">
-      <div class="section-heading"><div><h2 id="activity-title">Run history</h2><p id="activity-subtitle">Newest first · a gap over one hour starts a new run.</p></div><label class="import-button" tabindex="0">Load JSON <span aria-hidden="true">↥</span><input id="import" type="file" accept=".json,application/json" multiple class="sr-only"></label></div>
-      <div class="filters"><label class="search"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search roles, companies or resumes…" aria-label="Search applications"></label><label class="sr-only" for="status">Filter by status</label><select id="status"><option value="">All statuses</option></select></div>
-      <p id="error" class="error" role="alert" hidden></p>
-      <div id="runs" class="run-log"></div>
-      <div id="empty" class="empty" role="status"><h3 id="empty-title">No applications logged.</h3></div>
-      <div class="table-footer"><span id="result-count" aria-live="polite">0 runs · 0 applications</span><span>All times SGT</span></div>
+    <header class="topbar"><h1>Applications</h1><div><label class="import-button" tabindex="0">Load JSON<input id="import" type="file" accept=".json,application/json" multiple class="sr-only"></label><button id="refresh" class="quiet-button" type="button">Refresh export</button></div></header>
+    <p id="error" class="error" role="alert" hidden></p>
+    <section class="stats" id="stats" aria-label="Application counts"></section>
+    <section class="panel attention" aria-labelledby="attention-title"><div class="section-heading"><div><h2 id="attention-title">Needs attention</h2><p>Queued, blocked, uncertain, failed, or stale applications.</p></div></div><div id="attention-items" class="attention-list"></div><p id="attention-empty" class="empty-inline" hidden>No applications need attention.</p></section>
+    <section class="panel funnel-panel" aria-labelledby="funnel-title"><h2 id="funnel-title">Funnel</h2><div id="funnel" class="funnel"></div></section>
+    <nav class="tabs" role="tablist" aria-label="Dashboard views"><button data-tab="applications" role="tab" aria-selected="true">Applications</button><button data-tab="runs" role="tab" aria-selected="false">Runs</button><button data-tab="questions" role="tab" aria-selected="false">Questions</button><button data-tab="settings" role="tab" aria-selected="false">Settings</button></nav>
+    <section class="view panel" data-view="applications" aria-label="Applications">
+      <div class="section-heading"><div><h2>Applications</h2><p id="application-count"></p></div></div>
+      <div class="filters">
+        <label>Status<select id="filter-status"><option value="">All statuses</option></select></label>
+        <label>Company<input id="filter-company" type="search" placeholder="Any company"></label>
+        <label>Channel or host<input id="filter-channel" type="search" placeholder="LinkedIn or host"></label>
+        <label>From<input id="filter-from" type="date"></label><label>To<input id="filter-to" type="date"></label>
+        <label>Applied by<input id="filter-applied_by" type="search" placeholder="Any agent"></label>
+        <label>Stop reason<input id="filter-stop_reason" type="search" placeholder="Any reason"></label>
+      </div>
+      <div class="table-wrap"><table><thead><tr><th data-sort="title" aria-sort="none"><button type="button" class="sort-button">Role / company</button></th><th data-sort="status" aria-sort="none"><button type="button" class="sort-button">Status</button></th><th data-sort="channel" aria-sort="none"><button type="button" class="sort-button">Channel</button></th><th data-sort="submitted_at" aria-sort="none"><button type="button" class="sort-button">Applied</button></th><th data-sort="response" aria-sort="none"><button type="button" class="sort-button">Response</button></th><th data-sort="applied_by" aria-sort="none"><button type="button" class="sort-button">Applied by</button></th><th>Links</th></tr></thead><tbody id="application-rows"></tbody></table></div>
+      <p id="application-empty" class="empty-inline" hidden>No matching applications.</p>
     </section>
-    <footer class="footer"><span id="updated">Waiting for application data</span></footer>
+    <section class="view panel" data-view="runs" hidden><div class="section-heading"><div><h2>Runs</h2><p>Newest first · gaps over one hour start a new run.</p></div><span id="run-count"></span></div><div id="runs" class="run-log"></div><p id="runs-empty" class="empty-inline" hidden>No runs match these filters.</p></section>
+    <section class="view panel" data-view="questions" hidden><div class="section-heading"><div><h2>Questions</h2><p id="question-count">Unresolved questions from prepared applications.</p><p id="answer-bank-version"></p></div></div><div id="questions-list" class="questions-list"></div><div id="pending-changes" class="change-status"></div></section>
+    <section class="view panel" data-view="settings" hidden><div class="section-heading"><div><h2>Settings</h2><p>Current settings are read from the latest export. Edits download a change file.</p></div></div><div id="settings-fields" class="settings-fields"></div><div id="settings-status" class="change-status"></div></section>
+    <footer class="footer"><span id="updated">Waiting for application data</span><span id="result-count"></span></footer>
   </main>
-
-  <dialog id="details"><div class="dialog-header"><span class="eyebrow">APPLICATION DETAILS</span><button id="close-details" class="icon-button" aria-label="Close details">×</button></div><h2 id="detail-title"></h2><p id="detail-company"></p><div id="detail-meta" class="detail-meta"></div><div id="detail-links" class="detail-links"></div><section><h3>Saved job description</h3><p id="detail-description" class="description"></p></section><section id="detail-notes-section"><h3>Notes</h3><p id="detail-notes" class="description"></p></section><section><h3>Activity log</h3><ul id="detail-events" class="event-list"></ul></section></dialog>
+  <dialog id="details"><div class="dialog-header"><span>APPLICATION DETAILS</span><button id="close-details" class="icon-button" aria-label="Close details">×</button></div><h2 id="detail-title"></h2><p id="detail-company"></p><div id="detail-meta" class="detail-meta"></div><div id="detail-links" class="detail-links"></div><section><h3>Saved job description</h3><p id="detail-description" class="description"></p></section><section><h3>Activity log</h3><ul id="detail-events" class="event-list"></ul></section></dialog>
 </body>
 </html>

@@ -121,3 +121,16 @@ __pycache__/
 !/scripts/cleanup_tabs.sh
 !/tests/test_cleanup.py
 !/docs/cleanup.md
+
+# Generic control-plane assets, read-only payload builder and synthetic UI tests.
+!/dashboard/control.js
+!/scripts/dashboard_payload.py
+!/tests/control-plane.test.cjs
+!/tests/test_dashboard_payload.py
+!/tests/test_dashboard_integration.py
+!/docs/dashboard-control.md
+
+# Generic export recovery boundary and synthetic failure fixtures.
+!/scripts/export_recovery.py
+!/tests/test_export_recovery.py
+!/docs/export-recovery.md

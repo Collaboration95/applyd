@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 from answers import QUESTION_KEYS, _rows, bank_version
 from settings import load_settings, settings_hash
+from outcomes import overdue, responded
 
 
 def _read_json(path, default):
@@ -142,15 +143,20 @@ def enrich_payload(root, records_snapshot, payload, now=None):
             app["blocked_on_answer_ids"] = list(record.get("blocked_on_answer_ids") or [])
             app["stop_reason"] = record.get("stop_reason")
             app["record_url"] = _record_url(root, app_id)
+            app["responded"] = responded(record)
         outcome = record.get("outcome") or record.get("response")
         if not outcome and record.get("status") in {"interview", "rejected"}:
             outcome = record["status"]
         if outcome:
             outcomes.append({"application_id": app_id, "outcome": outcome,
-                             "at": record.get("outcome_at") or record.get("status_updated_at")})
+                             "at": record.get("latest_outcome_at") or record.get("outcome_at") or record.get("status_updated_at")})
             if app:
                 app["response"] = outcome
         item = _attention(record, now)
+        if (record.get("submissions") or record.get("submitted_at")) and overdue(record, now.isoformat(), settings["follow_up_days"]):
+            item = item or {"application_id": app_id, "company": record.get("company"), "title": record.get("role"),
+                            "status": record.get("status"), "listing_url": record.get("canonical_listing_url") or record.get("listing_url")}
+            item.update(reason="Follow-up is overdue.", stop_reason="follow_up_overdue")
         if item:
             item["record_url"] = _record_url(root, app_id)
             attention.append(item)

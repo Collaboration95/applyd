@@ -200,6 +200,49 @@ class WorkflowTests(unittest.TestCase):
         self.event(identity, "submitted", evidence=self.evidence())
         self.assertEqual(len(self.record(identity)["submissions"]), 1)
 
+    def test_delayed_confirmation_and_outcome_keep_actual_submission_time(self):
+        identity = self.ready()
+        occurred = self.now + timedelta(minutes=30)
+        recorded = self.now + timedelta(hours=3)
+        args = argparse.Namespace(id=identity, status="submitted", at=occurred.isoformat(), note="", evidence=self.evidence())
+        w.event(self.root, args, recorded)
+        record = self.record(identity)
+        self.assertEqual(record["submitted_at"], occurred.isoformat())
+        self.assertEqual(record["submissions"][0]["recorded_at"], recorded.isoformat())
+        args.status = "interview"
+        args.at = (self.now + timedelta(days=1)).isoformat()
+        args.follow_up_at = (self.now + timedelta(days=3)).isoformat()
+        w.event(self.root, args, self.now + timedelta(days=2))
+        w.event(self.root, args, self.now + timedelta(days=3))
+        updated = self.record(identity)
+        self.assertEqual(updated["submitted_at"], occurred.isoformat())
+        self.assertEqual(len(updated["outcome_events"]), 1)
+        payload = w.read(self.root / "dashboard/data/applications.json")
+        self.assertEqual(payload["applications"][0]["submissions"][0]["at"], occurred.isoformat())
+        self.assertEqual(payload["applications"][0]["outcome"], "interview")
+
+    def test_overdue_followup_is_exported_without_regrouping_submission(self):
+        identity = self.ready()
+        self.event(identity, "submitted", evidence=self.evidence())
+        from dashboard_payload import enrich_payload
+        payload = {"applications": [{"id": identity, "status": "submitted"}]}
+        result = enrich_payload(self.root, [self.record(identity)], payload, self.now + timedelta(days=15))
+        self.assertEqual(result["attention"][0]["stop_reason"], "follow_up_overdue")
+
+    def test_batch_credit_uses_frozen_attempt_and_not_edited_record_context(self):
+        import batches
+        identity = self.ready()
+        answers = self.root / self.record(identity)["prepared"]["answers_path"]
+        self.event(identity, "preparing")
+        self.event(identity, "ready", resume_scope="backend", answers=answers, batch_id="older-batch", category="job")
+        self.event(identity, "submitted", evidence=self.evidence())
+        record = self.record(identity)
+        self.assertEqual(record["submissions"][0]["batch_id"], "older-batch")
+        record["batch_id"] = "new-batch"
+        w.atomic_json(self.root / "applications/records" / identity / "record.json", record)
+        self.assertEqual(batches.batch_progress(w.records(self.root), "new-batch", 1)["confirmed"], 0)
+        self.assertEqual(batches.batch_progress(w.records(self.root), "older-batch", 1)["confirmed"], 1)
+
     def test_confirmed_historical_submission_is_not_lost_after_expiry(self):
         identity = self.ready()
         self.application["review_due_at"] = self.now.isoformat()

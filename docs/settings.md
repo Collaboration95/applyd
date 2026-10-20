@@ -25,6 +25,7 @@ unknown key, unsupported schema or invalid value raises `SettingsError`
 | `retryable_statuses` | Defaults to `failed`, `awaiting_answer`; non-terminal statuses only; never bypasses reconciliation |
 | `start_mode` | `recommended` (default), `saved`, or HTTPS LinkedIn `/jobs/search…` URL |
 | `timezone` | Installed IANA name, default `UTC`; controls run timestamps and daily boundaries |
+| `follow_up_days` | Non-negative days, default `14`, for response/follow-up attention |
 | `browser`, `resume_scope` | Optional non-empty private strings, default `null` |
 | `role_rules` | Private JSON object, default `{}`; interpreted by parent role-policy integration |
 
@@ -99,3 +100,5 @@ changing JSON object order or moving the workspace does not change the hash.
 
 Verification: `python3 -m unittest discover -s tests -p test_settings.py -v`.
 The parent owns CLI glue and the publication allowlist for `settings.example.json`.
+
+Immutable schema-1 run hashes are verified against their exact saved settings. Newly introduced optional defaults do not rewrite or invalidate older run snapshots; original required policy fields remain mandatory.

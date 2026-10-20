@@ -21,8 +21,8 @@
     return counts;
   }
   function funnel(apps, outcomes) {
-    const outcomeIds = new Set((outcomes || []).map((o) => o.application_id));
-    return { Captured: apps.length, Ready: apps.filter((a) => a.status === "ready" || a.status === "submitted" || (a.submissions || []).length).length, Submitted: apps.filter((a) => a.status === "submitted" || (a.submissions || []).length).length, Responded: apps.filter((a) => outcomeIds.has(a.id) || a.response || a.outcome || ["interview", "rejected"].includes(a.status)).length };
+    const outcomeIds = new Set((outcomes || []).filter((o) => o.outcome !== "withdrawn").map((o) => o.application_id));
+    return { Captured: apps.length, Ready: apps.filter((a) => a.status === "ready" || a.status === "submitted" || (a.submissions || []).length).length, Submitted: apps.filter((a) => a.status === "submitted" || (a.submissions || []).length).length, Responded: apps.filter((a) => (a.responded === true || a.responded === undefined && (outcomeIds.has(a.id) || a.response && a.response !== "withdrawn" || a.outcome && a.outcome !== "withdrawn" || ["interview", "rejected"].includes(a.status)))).length };
   }
   function attention(apps, timezone, now = new Date()) {
     const instant = now instanceof Date ? now.getTime() : Date.parse(now), staleMs = 24 * 60 * 60 * 1000;

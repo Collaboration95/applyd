@@ -53,7 +53,8 @@ def export_dashboard(root=ROOT, snapshot=None):
             path = local_file(root, saved.get("exact_resume_copy"))
             return {"id": saved.get("id"), "file": path.name if path else None,
                     "url": "../" + path.relative_to(root).as_posix() if path else None}
-        events = [{"at": e.get("at"), "status": e.get("status"), "note": e.get("note", "")}
+        events = [{"at": e.get("at"), "occurred_at": e.get("occurred_at") or e.get("at"),
+                   "recorded_at": e.get("recorded_at"), "status": e.get("status"), "note": e.get("note", "")}
                   for e in record.get("events", [])]
         submissions = [{"at": s.get("submitted_at"), "resume": resume(s),
                         "applied_by": s.get("applied_by") or record.get("applied_by")}
@@ -68,6 +69,8 @@ def export_dashboard(root=ROOT, snapshot=None):
             "captured_at": record.get("captured_at"), "updated_at": record.get("status_updated_at"),
             "description": description.read_text() if description else "",
             "notes": record.get("notes", ""), "events": events, "submissions": submissions,
+            "outcome": record.get("outcome"), "latest_outcome_at": record.get("latest_outcome_at"),
+            "follow_up_at": record.get("follow_up_at"),
             "prepared": {"at": prepared.get("prepared_at"), "resume": resume(prepared)} if prepared else None})
     applications.sort(key=lambda app: app.get("updated_at") or "", reverse=True)
     generated_at = datetime.now(ZoneInfo(settings["timezone"])).isoformat()

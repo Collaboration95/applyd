@@ -31,12 +31,14 @@ import safety
 import scope_guard
 import setup_workspace
 import cleanup
+import outcomes
+import batches
 from export_recovery import after_mutation, recover, export_state
 from zoneinfo import ZoneInfo
 
 STATUSES = {"discovered", "preparing", "awaiting_answer", "ready", "submitted",
             "submission_uncertain", "failed", "skipped", "rejected", "interview", "withdrawn",
-            "saved", "dry_run_complete"}
+            "saved", "dry_run_complete", "acknowledged", "assessment", "offer"}
 TRANSITIONS = {
     "discovered": {"preparing", "skipped"},
     "preparing": {"awaiting_answer", "ready", "failed", "skipped", "dry_run_complete"},
@@ -421,17 +423,41 @@ def event(root, args, now, deferred=False):
     directory = root / "applications/records" / slug(args.id)
     record = read(directory / "record.json")
     status = args.status
+    try:
+        occurred = batches.validate_event_time(args.at) if getattr(args, "at", None) else now
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise ValueError("event_at requires an ISO timestamp with a UTC offset") from exc
+    details = {**batches.event_metadata(occurred, now), "status": status, "note": args.note}
+    if status in outcomes.OUTCOME_STATUSES and (record.get("submissions") or record.get("submitted_at")):
+        evidence = None
+        if args.evidence:
+            sha = digest(args.evidence)
+            target = directory / "outcomes" / ("evidence-" + sha + args.evidence.suffix)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if not target.exists():
+                shutil.copy2(args.evidence, target)
+            evidence = {"path": str(target.relative_to(root)), "sha256": sha}
+        updated = outcomes.apply_outcome(record, status, occurred.isoformat(), now.isoformat(),
+                                        evidence=evidence, note=args.note,
+                                        follow_up_at=getattr(args, "follow_up_at", None),
+                                        follow_up_days=settings.load_settings(root)["follow_up_days"])
+        if updated.get("outcome_events") == record.get("outcome_events"):
+            return finish_mutation(root, {"application_id": args.id, "status": record["status"], "already_recorded": True}, deferred, repeated=True)
+        updated["events"].append(details)
+        updated.update(status=updated["outcome"], status_updated_at=now.isoformat())
+        atomic_json(directory / "record.json", updated)
+        seen_index.update(root, updated, canonical_url)
+        return finish_mutation(root, {"application_id": args.id, "status": updated["status"]}, deferred)
     if status in {"preparing", "ready"}:
         work_guard(root, record.get("run_id"), now, "event")
     if status not in STATUSES or status == "discovered":
         raise ValueError("Invalid event status")
     if status == record["status"]:
         return finish_mutation(root, {"application_id": args.id, "status": status, "already_recorded": True}, deferred, repeated=True)
-    if status not in TRANSITIONS[record["status"]]:
+    if status not in TRANSITIONS.get(record["status"], set()):
         raise ValueError(f"Invalid transition {record['status']} -> {status}; reconcile before retrying")
     if record["status"] == "submission_uncertain" and status != "submitted" and (not args.evidence or not args.note):
         raise ValueError("Resolving uncertainty without submission requires reconciliation evidence and a note")
-    details = {"at": now.isoformat(), "status": status, "note": args.note}
     if status == "ready":
         if not args.resume_scope or not args.answers:
             raise ValueError("Ready requires --resume-scope and an exact questions/answers JSON file")
@@ -455,6 +481,10 @@ def event(root, args, now, deferred=False):
                               "exact_resume_copy": str(target.relative_to(root)),
                               "answers_path": str((attempt / "answers.json").relative_to(root)),
                               "answers_sha256": digest(attempt / "answers.json")}
+        batch_id = getattr(args, "batch_id", None) or record.get("batch_id")
+        category = getattr(args, "category", None) or record.get("category")
+        record["prepared"] = batches.attach_attempt_context(record["prepared"], batch_id, category)
+        record.update(batch_id=batch_id, category=category)
     if status in {"submitted", "submission_uncertain"}:
         prepared = record.get("prepared")
         if not prepared:
@@ -465,14 +495,14 @@ def event(root, args, now, deferred=False):
             # Confirmed historical submissions must still be logged after a deadline
             # or replacement; the saved ID/hash records what was actually prepared.
             try:
-                preflight(root, {**record, "status": "ready"}, now)
+                preflight(root, {**record, "status": "ready", "submission_intent": None}, now)
             except (ValueError, OSError) as exc:
                 details["recording_warning"] = str(exc)
             evidence = directory / ("confirmation-" + now.strftime("%Y%m%dT%H%M%S%f") + args.evidence.suffix)
             shutil.copy2(args.evidence, evidence)
             details.update(confirmation_path=str(evidence.relative_to(root)), confirmation_sha256=digest(evidence))
-            record["submissions"].append({**prepared, "submitted_at": now.isoformat(), **details})
-            record["submitted_at"] = now.isoformat()
+            record["submissions"].append({**prepared, "submitted_at": occurred.isoformat(), **details})
+            record["submitted_at"] = occurred.isoformat()
     if record["status"] == "submission_uncertain" and status != "submitted":
         evidence = directory / ("reconciliation-" + now.strftime("%Y%m%dT%H%M%S%f") + args.evidence.suffix)
         shutil.copy2(args.evidence, evidence)
@@ -497,7 +527,7 @@ def export_csv(root, snapshot=None):
     fields = ["application_id", "company", "role", "location", "platform", "platform_job_id",
               "employer_requisition_id", "listing_url", "application_url", "captured_at", "status",
               "status_updated_at", "resume_id", "source_master_id", "resume_sha256", "record_path",
-              "submitted_at", "confirmation_path", "notes"]
+              "submitted_at", "confirmation_path", "notes", "outcome", "latest_outcome_at", "follow_up_at"]
     target = root / "applications/log.csv"
     target.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=".csv-", dir=target.parent)
@@ -563,6 +593,8 @@ def main():
     source.add_argument("--file", type=Path)
     source.add_argument("--stdin", action="store_true")
     new.add_argument("--run-id")
+    new.add_argument("--batch-id")
+    new.add_argument("--category")
     update = commands.add_parser("event")
     update.add_argument("--id", required=True)
     update.add_argument("--status", choices=sorted(STATUSES - {"discovered"}), required=True)
@@ -571,6 +603,10 @@ def main():
     update.add_argument("--answers", type=Path)
     update.add_argument("--evidence", type=Path)
     update.add_argument("--run-id")
+    update.add_argument("--at", help="Actual event occurrence, with UTC offset; recorded_at remains the current time")
+    update.add_argument("--follow-up-at")
+    update.add_argument("--batch-id")
+    update.add_argument("--category")
     check = commands.add_parser("preflight")
     check.add_argument("--id", required=True)
     commands.add_parser("export")
@@ -617,6 +653,10 @@ def main():
     tab.add_argument("--tab-id", required=True, type=int)
     tab.add_argument("--url", required=True)
     tab.add_argument("--id", required=True)
+    progress = commands.add_parser("batch-progress")
+    progress.add_argument("--batch-id", required=True)
+    progress.add_argument("--target", type=int, required=True)
+    progress.add_argument("--categories", type=Path)
     args = parser.parse_args()
     root = select_root(args.workspace)
     try:
@@ -669,6 +709,7 @@ def main():
                     raise ListingError("input", "invalid JSON") from exc
                 if args.run_id:
                     data["run_id"] = args.run_id
+                data.update(batches.attach_attempt_context({}, args.batch_id, args.category))
                 result = capture(root, data, now, args.defer_export)
             elif args.command == "event":
                 result = event(root, args, now, args.defer_export)
@@ -733,6 +774,8 @@ def main():
             elif args.command == "register-tab":
                 work_guard(root, args.run_id, now, "register-tab")
                 result = cleanup.register_tab(root, args.run_id, args.window_id, args.tab_id, args.url, args.id, now)
+            elif args.command == "batch-progress":
+                result = batches.batch_progress(records(root), args.batch_id, args.target, read(args.categories) if args.categories else None)
             else:
                 result = {"export": recover(root, export_csv)}
         print(json.dumps(result, indent=2, ensure_ascii=False))

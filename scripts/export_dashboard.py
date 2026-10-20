@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 from workspace_config import select_root
+from settings import load_settings
 
 ROOT = Path(__file__).resolve().parents[1]
 SGT = ZoneInfo("Asia/Singapore")
@@ -41,6 +42,7 @@ def local_file(root, relative):
 
 def export_dashboard(root=ROOT):
     root = root.resolve()
+    settings = load_settings(root)
     applications = []
     for source in sorted((root / "applications/records").glob("*/record.json")):
         record = json.loads(source.read_text())
@@ -65,8 +67,8 @@ def export_dashboard(root=ROOT):
             "notes": record.get("notes", ""), "events": events, "submissions": submissions,
             "prepared": {"at": prepared.get("prepared_at"), "resume": resume(prepared)} if prepared else None})
     applications.sort(key=lambda app: app.get("updated_at") or "", reverse=True)
-    generated_at = datetime.now(SGT).isoformat()
-    payload = {"timezone": "Asia/Singapore", "generated_at": generated_at, "applications": applications}
+    generated_at = datetime.now(ZoneInfo(settings["timezone"])).isoformat()
+    payload = {"timezone": settings["timezone"], "settings": settings, "generated_at": generated_at, "applications": applications}
     directory = root / "dashboard/data"
     write_json(directory / "applications.json", payload)
     # Classic script works from file://; browsers commonly block fetch() of local JSON.

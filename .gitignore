@@ -237,3 +237,14 @@ __pycache__/
 !/.github/workflows/regression.yml
 !/tests/test_release_smoke.py
 !/docs/release.md
+
+# Audited generic additions retained from this blocked draft.
+# Generic lean question/cleanup workflows and a synthetic batch shape.
+!/.claude/skills/answer-questions/
+/.claude/skills/answer-questions/*
+!/.claude/skills/answer-questions/SKILL.md
+!/.claude/skills/cleanup-run/
+/.claude/skills/cleanup-run/*
+!/.claude/skills/cleanup-run/SKILL.md
+!/docs/batch.example.json
+!/docs/lean-workflows.md

@@ -56,9 +56,12 @@ class WorkflowTests(unittest.TestCase):
     def ready(self):
         identity = self.capture()
         self.event(identity, "preparing")
-        answers = self.root / "answers.json"
-        w.atomic_json(answers, [{"question": "Sponsorship required?", "answer": "Yes", "source_answer_id": "sponsorship_required"}])
-        self.event(identity, "ready", resume_scope="backend", answers=answers)
+        w.atomic_json(self.root / "profile/answers.json", {"schema_version": 1, "answers": [{
+            "id": "synthetic-answer", "value": "Yes", "type": "text", "scope": {},
+            "aliases": ["Synthetic question?"], "source": "Synthetic user confirmation",
+            "confirmed_at": (self.now - timedelta(days=1)).isoformat()}]})
+        prepared = w.prepare_answers(self.root, identity, [{"question": "Synthetic question?"}], self.now)
+        self.event(identity, "ready", resume_scope="backend", answers=self.root / prepared["answers_path"])
         return identity
 
     def record(self, identity):
@@ -149,6 +152,25 @@ class WorkflowTests(unittest.TestCase):
         (self.root / record["prepared"]["answers_path"]).write_text("[]")
         with self.assertRaisesRegex(ValueError, "snapshot was modified"):
             w.preflight(self.root, record, self.now)
+
+    def test_preflight_revalidates_answer_expiry_after_preparation(self):
+        identity = self.ready()
+        bank = w.read(self.root / "profile/answers.json")
+        bank["answers"][0]["valid_until"] = (self.now + timedelta(hours=1)).isoformat()
+        w.atomic_json(self.root / "profile/answers.json", bank)
+        prepared = w.prepare_answers(self.root, identity, [{"question": "Synthetic question?"}], self.now)
+        self.event(identity, "ready", resume_scope="backend", answers=self.root / prepared["answers_path"])
+        with self.assertRaisesRegex(ValueError, "answer_validation"):
+            w.preflight(self.root, self.record(identity), self.now + timedelta(hours=2))
+
+    def test_unknown_question_cannot_reach_ready(self):
+        identity = self.capture()
+        prepared = w.prepare_answers(self.root, identity, [{"question": "Unknown synthetic qualification?"}], self.now)
+        self.assertEqual(self.record(identity)["status"], "awaiting_answer")
+        self.assertTrue(self.record(identity)["blocked_on_answer_ids"])
+        self.event(identity, "preparing")
+        with self.assertRaisesRegex(ValueError, "answer_validation"):
+            self.event(identity, "ready", resume_scope="backend", answers=self.root / prepared["answers_path"])
 
     def test_submitted_requires_confirmation(self):
         identity = self.ready()

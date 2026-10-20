@@ -24,6 +24,7 @@ from export_dashboard import export_dashboard
 from workspace_config import select_root
 import seen_index
 import settings
+import answers as answer_core
 from zoneinfo import ZoneInfo
 
 STATUSES = {"discovered", "preparing", "awaiting_answer", "ready", "submitted",
@@ -235,6 +236,9 @@ def preflight(root, record, now):
         raise ValueError("Prepared resume has been replaced; prepare again")
     if digest(root / prepared["exact_resume_copy"]) != prepared["sha256"] or digest(root / prepared["answers_path"]) != prepared["answers_sha256"]:
         raise ValueError("Prepared submission snapshot was modified")
+    validation = answer_core.validate_snapshot(root, record, read(root / prepared["answers_path"]), now)
+    if not validation["valid"]:
+        raise ValueError("answer_validation: exact answers are unknown, expired, changed or outside scope")
     return {"application_id": record["application_id"], "ready": True, "resume_id": current["id"]}
 
 
@@ -332,6 +336,42 @@ def capture(root, data, now):
     return {"application_id": application_id, "record": str(directory / "record.json"), "duplicate": False, "status": status, "reason": reason}
 
 
+def prepare_answers(root, application_id, questions, now):
+    path = root / "applications/records" / slug(application_id) / "record.json"
+    record = read(path)
+    if record.get("submissions") or record["status"] in {"submitted", "submission_uncertain"}:
+        raise ValueError("Cannot prepare answers for a confirmed or uncertain submission")
+    prepared = answer_core.prepare_answers(root, record, questions, now)
+    record.update(status=prepared["status"], status_updated_at=now.isoformat(),
+                  blocked_on_answer_ids=prepared["blocked_on_answer_ids"],
+                  answer_preparation={k: prepared[k] for k in ("answers_path", "snapshot_version", "bank_version")})
+    record["events"].append({"at": now.isoformat(), "status": prepared["status"], "reason": "unknown_answer" if not prepared["ready"] else "answers_prepared"})
+    atomic_json(path, record)
+    seen_index.update(root, record, canonical_url)
+    export_csv(root)
+    return prepared
+
+
+def requeue_answers(root, now):
+    def resume_check(root, record, now):
+        scope = record.get("prepared", {}).get("scope") or settings.load_settings(root)["resume_scope"]
+        if not scope:
+            return False
+        resolve(read(root / "resumes/registry.json"), scope, "application", now, root)
+        return True
+    def eligible(root, record, now):
+        return settings.eligibility(record, settings.load_settings(root)) is None
+    result = answer_core.requeue(root, now, resume_check=resume_check, eligibility_check=eligible)
+    for update in result["updates"]:
+        path = root / "applications/records" / update["application_id"] / "record.json"
+        record = read(path)
+        record.update(update, status_updated_at=now.isoformat(), resumed_from_answers=True)
+        record["events"].append({"at": now.isoformat(), "status": "preparing", "reason": "answers_resolved"})
+        atomic_json(path, record)
+        seen_index.update(root, record, canonical_url)
+    return result
+
+
 def event(root, args, now):
     directory = root / "applications/records" / slug(args.id)
     record = read(directory / "record.json")
@@ -356,8 +396,11 @@ def event(root, args, now):
         answers = read(args.answers)
         if not isinstance(answers, list) or any(not isinstance(x, dict) or "question" not in x or "answer" not in x for x in answers):
             raise ValueError("Answers must be a JSON list with exact question and answer fields (an empty list is allowed)")
-        attempt = directory / "submissions" / now.strftime("%Y%m%dT%H%M%S%f")
-        attempt.mkdir(parents=True)
+        if record.get("blocked_on_answer_ids") or not answer_core.validate_snapshot(root, record, answers, now)["valid"]:
+            raise ValueError("answer_validation: prepare current known answers before ready")
+        attempts = directory / "submissions"
+        attempts.mkdir(parents=True, exist_ok=True)
+        attempt = Path(tempfile.mkdtemp(prefix=now.strftime("%Y%m%dT%H%M%S%f") + "-", dir=attempts))
         target = attempt / Path(resume["path"]).name
         shutil.copy2(resume["path"], target)
         atomic_json(attempt / "answers.json", answers)
@@ -476,6 +519,15 @@ def main():
     begin.add_argument("--observed-url", required=True)
     begin.add_argument("--session-id", required=True)
     commands.add_parser("recover-submit")
+    prepare = commands.add_parser("prepare-answers")
+    prepare.add_argument("--id", required=True)
+    prepare.add_argument("--questions", type=Path, required=True)
+    context = commands.add_parser("context")
+    context.add_argument("--run-id")
+    import_answers = commands.add_parser("import-answers")
+    import_answers.add_argument("--file", type=Path, required=True)
+    import_answers.add_argument("--preview", action="store_true")
+    commands.add_parser("requeue")
     args = parser.parse_args()
     root = select_root(args.workspace)
     try:
@@ -525,6 +577,9 @@ def main():
                 result = seen_index.reindex(root, records(root), canonical_url)
             elif args.command == "run-start":
                 result = settings.run_start(root, args.id, now)
+                context = answer_core.context(root, now)
+                atomic_json(root / "applications/runs" / args.id / ("context-" + context["version"] + ".json"), context)
+                result["context_version"] = context["version"]
             elif args.command == "screen":
                 data = read(args.file)
                 reason = settings.eligibility(data, policy)
@@ -533,6 +588,22 @@ def main():
                 result = begin_submit(root, args.id, args.observed_url, args.session_id, now)
             elif args.command == "recover-submit":
                 result = recover_submit(root, now)
+            elif args.command == "prepare-answers":
+                result = prepare_answers(root, args.id, read(args.questions), now)
+            elif args.command == "context":
+                result = answer_core.context(root, now)
+                if args.run_id:
+                    settings.load_run(root, args.run_id)
+                    atomic_json(root / "applications/runs" / args.run_id / ("context-" + result["version"] + ".json"), result)
+            elif args.command == "import-answers":
+                result = answer_core.import_answers(root, read(args.file), now, preview=args.preview)
+                if not args.preview:
+                    result["queue"] = requeue_answers(root, now)
+                    answer_core.context(root, now)
+                    export_csv(root)
+            elif args.command == "requeue":
+                result = requeue_answers(root, now)
+                export_csv(root)
             else:
                 result = export_csv(root)
         print(json.dumps(result, indent=2, ensure_ascii=False))

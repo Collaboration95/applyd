@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Application run log</title>
+  <title>Applications</title>
   <link rel="stylesheet" href="style.css">
   <script defer src="data.js"></script>
   <script defer src="runs.js"></script>
@@ -18,7 +18,7 @@
 
     <section class="applications" aria-labelledby="activity-title">
       <div class="section-heading"><div><h2 id="activity-title">Run history</h2><p id="activity-subtitle">Newest first · a gap over one hour starts a new run.</p></div><label class="import-button" tabindex="0">Load JSON <span aria-hidden="true">↥</span><input id="import" type="file" accept=".json,application/json" multiple class="sr-only"></label></div>
-      <div class="filters"><label class="search"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search roles, companies or resumes…" aria-label="Search applications"></label><label class="sr-only" for="status">Filter by status</label><select id="status"><option value="">All statuses</option><option value="submitted">Applied</option><option value="ready">Ready</option><option value="awaiting_answer">Needs an answer</option><option value="submission_uncertain">Check submission</option><option value="interview">Interview</option><option value="rejected">Rejected</option><option value="preparing">Preparing</option><option value="discovered">Found</option><option value="failed">Failed</option><option value="skipped">Skipped</option><option value="withdrawn">Withdrawn</option></select></div>
+      <div class="filters"><label class="search"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search roles, companies or resumes…" aria-label="Search applications"></label><label class="sr-only" for="status">Filter by status</label><select id="status"><option value="">All statuses</option></select></div>
       <p id="error" class="error" role="alert" hidden></p>
       <div id="runs" class="run-log"></div>
       <div id="empty" class="empty" role="status"><h3 id="empty-title">No applications logged.</h3></div>

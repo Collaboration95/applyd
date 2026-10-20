@@ -66,3 +66,12 @@ class DashboardExportTests(unittest.TestCase):
         export_dashboard(self.root)
         self.assertEqual(self.payload()["applications"], [])
         self.assertFalse((self.root / "dashboard/data/index.json").exists())
+
+    def test_dashboard_uses_neutral_title_and_data_driven_status_options(self):
+        dashboard = Path(__file__).resolve().parents[1] / "dashboard"
+        html = (dashboard / "index.html").read_text()
+        script = (dashboard / "app.js").read_text()
+        self.assertIn("<title>Applications</title>", html)
+        self.assertEqual(html.count("<option"), 1)
+        self.assertIn("availableStatuses(state.data.applications)", script)
+        self.assertIn("matchesCurrentStatus(app, state.status)", script)

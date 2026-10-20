@@ -1,0 +1,285 @@
+{
+  "created_at": "2026-10-20T14:00:00+08:00",
+  "note": "Roadmap v2. Local drafts for GitHub sub-issues. Existing GitHub issues #1-#23 (tmp/backlog-state.json) are referenced, not duplicated. Dependencies use v2 keys or existing #numbers.",
+  "epics": [
+    {"key": "stability", "step": 1, "title": "Step 1 — Stability: fast, deterministic, scoped execution",
+     "outcome": "The agent spends its time only on the parts of an application that need judgement. Duplicate checks, page extraction, answer assembly and staying in scope are handled by scripts, quickly and the same way every time."},
+    {"key": "control", "step": 2, "title": "Step 2 — Run control: settings, safety stops, cleanup, unattended runs",
+     "outcome": "Runs are configured by a settings file instead of prompt prose, stop safely on their own, clean up after themselves and report back. The user does not have to watch them."},
+    {"key": "feedback", "step": 2, "title": "Step 2 — Feedback: dashboard control plane, outcomes, contacts",
+     "outcome": "One page shows what was applied for, what needs attention, and what came back (interviews and rejections). Follow-ups with hiring contacts are drafted for the user to send."},
+    {"key": "public", "step": 2, "title": "Step 2 — Public repo presence",
+     "outcome": "A clean public README with a mascot, a quickstart, and screenshots made from synthetic demo data."}
+  ],
+  "issues": [
+    {
+      "key": "seen-index", "epic": "stability", "priority": "P0", "size": "Small", "risk": "Medium", "deps": [],
+      "related": ["#3", "#16"],
+      "title": "Ultrafast already-seen check with marker files and seen.sh",
+      "scope": "Use the filesystem as the hash set. Keep one marker file per identity key under applications/index/. Key names: li-<linkedin job id>; url-<sha1 of canonical URL> for non-LinkedIn listings; req-<sha1 of company|requisition id>; xpost-<sha1 of normalised company|title|location>. Each marker holds one line: '<application_id> <status>'. workspace.py writes markers atomically on capture and on every status event. Add 'workspace.py reindex' to rebuild all markers from records, removing stale ones. Add scripts/seen.sh (POSIX sh, no Python): 'seen.sh <id>...' prints '<id> new' or '<id> <status> <application_id>' per line. It accepts many IDs in one call so a whole search-results page is checked at once. The agent runs seen.sh before opening any job card and opens only 'new' IDs, or IDs whose status is in a retryable set taken from settings.",
+      "accept": [
+        "seen.sh checks 25 IDs in one call in under 20 ms on a laptop, with no Python process started.",
+        "capture and event keep markers consistent with records; reindex from records gives byte-identical markers.",
+        "A LinkedIn ID, canonical URL, requisition ID or cross-post identity that is already stored is reported as seen; an unknown ID is reported as new.",
+        "capture's own duplicate check uses the index instead of scanning every record.json."
+      ],
+      "files": "scripts/seen.sh (new); scripts/workspace.py capture/event/reindex; applications/index/",
+      "verify": "Synthetic records: reindex round trip, stale-marker removal, a timing check on 25 IDs, and the cross-post key."
+    },
+    {
+      "key": "extractor", "epic": "stability", "priority": "P0", "size": "Medium", "risk": "Medium", "deps": ["seen-index"],
+      "related": ["#7"],
+      "title": "Deterministic LinkedIn job-page extractor + capture --stdin",
+      "scope": "A single JavaScript snippet (scripts/extract_linkedin.js) run in the open LinkedIn job page. It returns JSON with: platform_job_id, title, company, location, workplace type, employment type, full job description text, easy_apply (bool), apply_url (external, if any), posted-age text, and the hiring-team/job-poster card (name, headline, profile URL) when visible. It reads only the current DOM: no navigation, no fetches, no profile visits. 'workspace.py capture --stdin' accepts that JSON directly and validates it against a schema. Selectors live in one place with fallbacks; any missing required field is a typed error, never a guess. Retire the hand-written tmp/job-input-*.json flow.",
+      "accept": [
+        "The same saved synthetic HTML fixture always gives identical JSON.",
+        "A missing required field gives exit code 2 and a field name, never partial capture.",
+        "The agent workflow is: seen.sh → open new job → run snippet → pipe to capture --stdin. No hand-written JSON.",
+        "The snippet makes no network requests and does not change the page."
+      ],
+      "files": "scripts/extract_linkedin.js (new); scripts/workspace.py capture; tests/fixtures (synthetic HTML)",
+      "verify": "Run against 2-3 synthetic HTML fixtures, including one with no hiring-team card and one external-apply job."
+    },
+    {
+      "key": "scope-guard", "epic": "stability", "priority": "P1", "size": "Small", "risk": "Medium", "deps": ["extractor", "settings"],
+      "related": ["#17", "#18"],
+      "title": "Stay on the LinkedIn page: per-run domain allowlist and off_scope stop",
+      "scope": "Each run declares its allowed hosts: linkedin.com, plus employer ATS hosts only if settings allow external applications. Job facts come only from the extractor on the LinkedIn job page. The agent does not search the web, open company sites, or browse Glassdoor or profiles. Navigation outside the allowlist ends that job with stop reason off_scope, records the URL, and moves to the next job. Write a short rule into the apply skill and enforce it in the runner/preflight. Preflight fails if the record's apply URL host is not allowed.",
+      "accept": [
+        "Preflight rejects an application whose destination host is not allowed by the run settings.",
+        "An off_scope stop is recorded as a typed reason and shown on the dashboard.",
+        "Captured facts have source = linkedin_job_page; other sources are rejected by capture."
+      ],
+      "files": "scripts/workspace.py preflight/capture; skill apply-linkedin",
+      "verify": "Synthetic records with allowed and disallowed hosts."
+    },
+    {
+      "key": "prepare-answers", "epic": "stability", "priority": "P1", "size": "Small", "risk": "Medium", "deps": [],
+      "related": ["#8", "#11"],
+      "title": "prepare-answers: build each application's answer snapshot from the saved answer bank",
+      "scope": "'workspace.py prepare-answers --id <app> --questions <questions.json>' takes the exact form questions the agent saw. It maps each one to a saved answer, an authorised default or a routine employer-preferred option, records the basis for each, and writes the answers file used by 'event --status ready'. Unmatched questions are listed with stable question IDs, and the application goes to awaiting_answer with structured blocker IDs instead of prose. The answer bank is loaded once per call. No model calls.",
+      "accept": [
+        "Known questions and synonyms resolve to saved values, with source/scope/basis recorded for each answer.",
+        "Null or unknown answers never reach 'ready'; unmatched questions produce blocker IDs.",
+        "Output is byte-identical for identical inputs."
+      ],
+      "files": "scripts/workspace.py; profile/answers.json (aliases)",
+      "verify": "Synthetic question sets: all known, one unknown, and a synonym."
+    },
+    {
+      "key": "dashboard-robust", "epic": "stability", "priority": "P1", "size": "Small", "risk": "Low", "deps": [],
+      "related": ["#4", "#14"],
+      "title": "Dashboard robustness and housekeeping",
+      "scope": "Skip invalid records and show a count banner instead of blanking the page (app.js:31). Number runs by start time so the numbers stay stable. Show only status filter options that exist in the data. The status filter matches current status only. Imports keep top-level keys. Remove dead CSS, add a narrow-screen media query, and use a neutral <title>.",
+      "accept": [
+        "A malformed record shows a banner; every other record still renders.",
+        "Run numbers do not change when an older JSON file is imported.",
+        "No personal name appears in index.html."
+      ],
+      "files": "dashboard/app.js, runs.js, style.css, index.html",
+      "verify": "Extend tests/test_dashboard.py and run-grouping.test.cjs with a malformed synthetic record."
+    },
+    {
+      "key": "skills", "epic": "stability", "priority": "P1", "size": "Small", "risk": "Low", "deps": ["seen-index", "extractor", "prepare-answers", "cleanup-run"],
+      "related": ["#7"],
+      "title": "Three lean skills that call scripts instead of restating rules",
+      "scope": "apply-linkedin: the loop seen.sh → extract → capture → prepare-answers → ready → preflight → submit → event. answer-questions: read the question inbox, save answers in one batch, requeue. cleanup-run: close the run's tabs, reconcile uncertain submissions, export, summary. Each skill is under 60 lines and holds commands and stop rules only. Policy moves out of AGENTS.md prose into settings.json, the answer bank and script checks; AGENTS.md shrinks to pointers.",
+      "accept": [
+        "Each SKILL.md is under 60 lines and contains no duplicated answer values or eligibility prose.",
+        "The batch prompt files in applications/batches/ no longer need to restate rules; they hold only target and settings overrides.",
+        "A dry run on synthetic data completes using only the skill instructions."
+      ],
+      "files": ".claude/skills/{apply-linkedin,answer-questions,cleanup-run}/SKILL.md; AGENTS.md",
+      "verify": "Dry run with synthetic fixtures; line-count check."
+    },
+    {
+      "key": "settings", "epic": "control", "priority": "P0", "size": "Small", "risk": "Medium", "deps": [],
+      "related": ["#5", "#18", "#21"],
+      "title": "Run settings file: Easy Apply only, external rules, save-only, dry-run, caps, blocklists",
+      "scope": "Private settings.json with a schema version, loaded by every command. Keys: mode (apply | save_only | dry_run); easy_apply_only (bool); external_hosts allow/deny; daily_cap; per_run_cap; per_run_minutes; company_blocklist; title_blocklist (regex); max_required_years; retryable_statuses; start_mode (e.g. begin from LinkedIn saved jobs vs recommended vs a search URL). save_only captures listings and optionally clicks LinkedIn Save, without applying. dry_run fills forms but never clicks Submit and records 'dry_run_complete'. Each run stores a snapshot of the settings it used. Daily counters come from records, not memory.",
+      "accept": [
+        "Preflight refuses to submit in save_only or dry_run mode, or when the daily cap is reached (computed from records).",
+        "easy_apply_only=true makes external-apply jobs end as skipped:external_apply without being opened.",
+        "Blocklisted company or title ends as skipped:blocklist before extraction finishes.",
+        "The run record stores the exact settings snapshot and its hash."
+      ],
+      "files": "settings.json (private) + settings.example.json; scripts/workspace.py",
+      "verify": "Synthetic preflight cases for each mode, the cap and the blocklist."
+    },
+    {
+      "key": "kill-switch", "epic": "control", "priority": "P0", "size": "Small", "risk": "High", "deps": ["settings"],
+      "related": ["#17"],
+      "title": "Account-safety stop: captcha, warnings, login walls, restriction notices",
+      "scope": "Define detectors for the extractor and skill: captcha or challenge page, 'unusual activity' or restriction notice, unexpected sign-in page, rate-limit message. Any match stops the whole run (not only the job) with a typed run stop reason and a screenshot, then sends a push notification. Also add a manual kill switch: if the file applications/STOP exists, the next command refuses to start new work.",
+      "accept": [
+        "A detector match ends the run with stop_reason=account_safety and no further submissions.",
+        "Creating applications/STOP makes seen/capture/preflight refuse new work, and the run records it.",
+        "The user receives one notification per stop."
+      ],
+      "files": "scripts/extract_linkedin.js; scripts/workspace.py; skill apply-linkedin",
+      "verify": "Synthetic challenge-page fixtures; STOP file test."
+    },
+    {
+      "key": "cleanup-run", "epic": "control", "priority": "P1", "size": "Small", "risk": "Medium", "deps": ["settings"],
+      "related": ["#16"],
+      "title": "End-of-run cleanup: close only the tabs this run opened, reconcile, summarise",
+      "scope": "Record every tab the run opens in applications/runs/<run-id>/tabs.json (window/tab id + URL at open). scripts/cleanup_tabs.sh uses osascript against Brave (Chromium AppleScript dictionary) and closes only tabs in that list. It skips any tab whose current host is no longer an allowed host, and any form tab whose application is submission_uncertain. It never closes the user's own tabs. Afterwards: reconcile submission_uncertain entries, run export, and write a run summary (applied / skipped by reason / awaiting answers / failures, with links).",
+      "accept": [
+        "Tabs not listed in tabs.json are never closed; a test with a fake tab list proves the filtering.",
+        "Uncertain-submission tabs are left open and listed in the summary.",
+        "The summary JSON and its Markdown are written for every run, including stopped runs."
+      ],
+      "files": "scripts/cleanup_tabs.sh (new); scripts/workspace.py run-summary; applications/runs/",
+      "verify": "Filter logic tested with synthetic tab lists; the osascript call stubbed in tests."
+    },
+    {
+      "key": "schedule", "epic": "control", "priority": "P2", "size": "Small", "risk": "Medium", "deps": ["settings", "kill-switch", "cleanup-run", "skills"],
+      "related": ["#19", "#21"],
+      "title": "Scheduled unattended runs with an end-of-run notification",
+      "scope": "Scheduled runs (e.g. weekdays 09:00: 10 Easy Apply jobs within settings). Each run is time- and count-bounded. It ends with cleanup and a push notification linking the run summary and the number of questions waiting. Runs are skipped if a STOP file or an unresolved account_safety stop exists.",
+      "accept": [
+        "A scheduled run respects caps and time budget, and ends with cleanup + notification.",
+        "No run starts while a STOP or account_safety stop is unresolved."
+      ],
+      "files": "scheduler config; skill apply-linkedin",
+      "verify": "Dry-run mode schedule on synthetic data."
+    },
+    {
+      "key": "review-agent", "epic": "control", "priority": "P2", "size": "Small", "risk": "Medium", "deps": ["prepare-answers"],
+      "related": ["#20"],
+      "title": "Pre-submit reviewer agent compares the filled form with the answer snapshot",
+      "scope": "Before preflight, a second, cheap agent reads the visible filled form values (via accessibility snapshot) and compares them to the frozen answers file and resume. Mismatches (wrong resume file, years field off, wrong radio button selected) block submit with reason review_mismatch and list the differences. Read-only: the reviewer never edits the form.",
+      "accept": [
+        "A seeded mismatch in a synthetic form snapshot blocks submit with a diff.",
+        "A matching snapshot passes; the reviewer verdict is stored on the attempt."
+      ],
+      "files": "skill apply-linkedin; scripts/workspace.py preflight (accepts reviewer verdict)",
+      "verify": "Synthetic form snapshots."
+    },
+    {
+      "key": "computer-use", "epic": "control", "priority": "P2", "size": "Medium", "risk": "High", "deps": ["settings", "scope-guard", "kill-switch"],
+      "related": ["#20"],
+      "title": "Computer-use fallback for ATS widgets and file-upload dialogs only",
+      "scope": "Use a computer-use agent only where browser DOM tools fail: native file pickers, canvas or custom widgets on allowed ATS hosts. Enabled only by settings (external_hosts allow), limited to the current tab, with a step budget. Every action is logged with screenshots. Not used for LinkedIn Easy Apply forms, which DOM tools handle.",
+      "accept": [
+        "Disabled by default; turning it on requires a settings key.",
+        "Each fallback session has a step budget and screenshots, and ends in a typed outcome."
+      ],
+      "files": "skill apply-linkedin (fallback section); settings.json",
+      "verify": "Manual verification on a non-submitting test form; no live employer submission."
+    },
+    {
+      "key": "dashboard-v2", "epic": "feedback", "priority": "P1", "size": "Medium", "risk": "Low", "deps": ["dashboard-robust"],
+      "related": ["#14", "#12", "#10"],
+      "title": "Dashboard control plane: stat bar, needs-attention, funnel, tabs, filters",
+      "scope": "Stat bar: applied, awaiting answer, preparing, failed, skipped, today, 7 days. A needs-attention panel lists awaiting_answer, submission_uncertain, failed, and stale preparing/ready jobs, each with reason and direct links. Funnel: captured → ready → submitted → responded. Tabs: Applications (sortable table), Runs (current), Questions, Settings (read-only view of settings.json; edits are downloaded as a change file and applied with a copied CLI command). Filters: company, apply channel/ATS host, date range, applied_by, stop reason, stored in the URL hash. Must still work from file:// with no build step.",
+      "accept": [
+        "All counts match records and CSV for the synthetic dataset.",
+        "The needs-attention panel lists every non-terminal, blocked or stale record with its reason.",
+        "Settings edits produce a downloadable change file plus a copyable command; the UI never says saved before refreshed data confirms it."
+      ],
+      "files": "dashboard/*; scripts/export_dashboard.py",
+      "verify": "Extend dashboard tests with the synthetic dataset."
+    },
+    {
+      "key": "outcomes", "epic": "feedback", "priority": "P1", "size": "Small", "risk": "Low", "deps": [],
+      "related": ["#22"],
+      "title": "Outcome tracking: interview, assessment, rejection, offer, follow-up dates",
+      "scope": "Add the statuses acknowledged, assessment, interview, rejected, offer and withdrawn as follow-up events on a submitted record. They never change the original submission time or run grouping. Optional follow_up_at. 'workspace.py event --status interview --at <time> --note ... --evidence ...'. The exporter passes outcome fields through. The dashboard shows a Response column and an overdue follow-up list.",
+      "accept": [
+        "Outcome events keep the submission in its original run.",
+        "The exporter includes outcome, latest outcome time and follow_up_at.",
+        "Overdue follow-ups (default 14 days, set in settings) appear in needs-attention."
+      ],
+      "files": "scripts/workspace.py event; scripts/export_dashboard.py; dashboard",
+      "verify": "Synthetic event sequences."
+    },
+    {
+      "key": "gmail-sync", "epic": "feedback", "priority": "P2", "size": "Medium", "risk": "Medium", "deps": ["outcomes"],
+      "related": [],
+      "title": "Read-only Gmail sync: classify replies into outcomes",
+      "scope": "Periodically search Gmail for employer and ATS emails since the last sync and classify each as acknowledged, assessment, interview, rejection, recruiter message or unrelated. Match to an application by company, role and listing ID, and record the outcome event with the message ID as evidence. Ambiguous matches go to needs-attention, not to a guess. Optionally label threads. Never send, reply or delete. Interview or assessment dates create a calendar entry only if the calendar connector is authorised.",
+      "accept": [
+        "Read-only: no send, reply or delete calls are used.",
+        "Every recorded outcome cites a message ID; ambiguous matches are queued.",
+        "Re-running the sync does not create duplicate events."
+      ],
+      "files": "skill gmail-sync; scripts/workspace.py event",
+      "verify": "Synthetic email fixtures for the classifier; manual check on a real inbox."
+    },
+    {
+      "key": "contacts", "epic": "feedback", "priority": "P2", "size": "Small", "risk": "Medium", "deps": ["extractor"],
+      "related": [],
+      "title": "Store hiring-team contacts visible on the job page",
+      "scope": "contacts[] on the record: name, title/headline, profile_url, email (only if printed in the job description or a confirmation email), source (linkedin_hiring_team | jd_text | confirmation_email), captured_at, relationship (job_poster | hiring_team | unknown), verified=false. Captured only from what the extractor already sees, or from synced emails. No profile visits, no email guessing, no enrichment services. 'workspace.py contact --id ... --add/--remove'. Shown in dashboard details.",
+      "accept": [
+        "capture --stdin stores the hiring-team card when present, with source and time.",
+        "Capture rejects contacts with any other source.",
+        "Contacts appear in dashboard details and in CSV export."
+      ],
+      "files": "scripts/workspace.py; scripts/extract_linkedin.js; dashboard",
+      "verify": "Synthetic fixtures with and without a hiring-team card."
+    },
+    {
+      "key": "outreach-drafts", "epic": "feedback", "priority": "P2", "size": "Small", "risk": "High", "deps": ["contacts", "outcomes", "settings"],
+      "related": [],
+      "title": "Draft-only follow-ups: Gmail drafts and copyable LinkedIn notes",
+      "scope": "For eligible applications (submitted, no response after N business days, contact present, not on do_not_contact), generate a short message: role, one CV-matching point from projects/catalog.json, thanks. Email: create a Gmail draft only, never send. LinkedIn: a note of at most 200 characters with a copy button and a profile link; the user sends it by hand. At most one follow-up per application, plus a daily draft cap. Drafts and user-confirmed sends are logged on the record. No automated LinkedIn messaging or invites.",
+      "accept": [
+        "No code path calls a send API; only draft creation is used.",
+        "Caps, the do_not_contact list and the one-follow-up limit are enforced from records.",
+        "The draft text and its sources are stored on the record."
+      ],
+      "files": "skill outreach; scripts/workspace.py; dashboard (copy button)",
+      "verify": "Synthetic eligibility cases; draft-only check."
+    },
+    {
+      "key": "weekly-report", "epic": "feedback", "priority": "P2", "size": "Small", "risk": "Low", "deps": ["outcomes"],
+      "related": ["#22", "#15"],
+      "title": "Weekly report: volume, response rates by preset/role/channel, effort",
+      "scope": "'workspace.py report --week' prints a one-screen summary computed from records: applications, responses, and response rate by resume preset, role tag and channel (Easy Apply vs external). Also median time per confirmed application, top stop reasons, and pending questions. Deterministic, no model calls.",
+      "accept": [
+        "Same records produce the same report.",
+        "Every figure comes from record fields; no estimates."
+      ],
+      "files": "scripts/workspace.py report",
+      "verify": "Synthetic dataset snapshot test."
+    },
+    {
+      "key": "demo-data", "epic": "public", "priority": "P1", "size": "Small", "risk": "Medium", "deps": ["#4"],
+      "related": ["#23"],
+      "title": "Synthetic demo dataset and automated screenshots",
+      "scope": "demo/: about 15 fictional applications across statuses, runs, outcomes and stop reasons, with fictional companies and no real data. 'scripts/screenshots.sh' opens the dashboard with demo data in a headless browser and writes docs/img/*.png plus a short GIF of a run. The privacy check (#4) scans them.",
+      "accept": [
+        "Demo data passes the privacy canary check.",
+        "Screenshots regenerate from one command and are the same each time apart from the timestamp."
+      ],
+      "files": "demo/; scripts/screenshots.sh; docs/img/",
+      "verify": "Privacy check plus a visual review."
+    },
+    {
+      "key": "readme", "epic": "public", "priority": "P1", "size": "Small", "risk": "Medium", "deps": ["demo-data", "#4"],
+      "related": ["#9", "#23"],
+      "title": "Public README, setup guide, architecture diagram, repo description",
+      "scope": "README: banner/mascot, a one-line description, a screenshot/GIF, and a 3-step quickstart (init → edit settings.json → run skill / open dashboard). Also an architecture diagram (seen → extract → capture → prepare-answers → preflight → submit → cleanup → sync), a safety section (user-approved outreach, no scraping, confirmation-required submission, private data never committed), and a FAQ. GitHub description and topics. Write no personal facts anywhere.",
+      "accept": [
+        "A new user can reach the demo dashboard by following only the README on a clean clone.",
+        "The README contains no private data or filenames (privacy check passes)."
+      ],
+      "files": "README.md (public); docs/",
+      "verify": "Fresh-clone walkthrough."
+    },
+    {
+      "key": "sprite", "epic": "public", "priority": "P2", "size": "Small", "risk": "Low", "deps": [],
+      "related": [],
+      "title": "Mascot sprite and banner",
+      "scope": "A small pixel-art mascot, for example a robot carrying a briefcase or a paper plane carrying CVs. Make it an SVG plus PNG at 64/128/256 px, a README banner (1280x320) and a social preview image (1280x640). Optionally add idle/working/done frames for the dashboard empty state. Use original artwork only.",
+      "accept": [
+        "Assets are in docs/brand/ and render in light and dark GitHub themes.",
+        "The social preview is set in repo settings."
+      ],
+      "files": "docs/brand/",
+      "verify": "Visual check in both GitHub themes."
+    }
+  ]
+}

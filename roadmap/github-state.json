@@ -1,0 +1,110 @@
+{
+  "epics": {
+    "stability": {
+      "number": 1,
+      "url": "https://github.com/Collaboration95/applyd/issues/1"
+    },
+    "control": {
+      "number": 2,
+      "url": "https://github.com/Collaboration95/applyd/issues/2"
+    },
+    "feedback": {
+      "number": 3,
+      "url": "https://github.com/Collaboration95/applyd/issues/3"
+    },
+    "public": {
+      "number": 4,
+      "url": "https://github.com/Collaboration95/applyd/issues/4"
+    }
+  },
+  "issues": {
+    "seen-index": {
+      "number": 5,
+      "url": "https://github.com/Collaboration95/applyd/issues/5"
+    },
+    "prepare-answers": {
+      "number": 6,
+      "url": "https://github.com/Collaboration95/applyd/issues/6"
+    },
+    "dashboard-robust": {
+      "number": 7,
+      "url": "https://github.com/Collaboration95/applyd/issues/7"
+    },
+    "settings": {
+      "number": 8,
+      "url": "https://github.com/Collaboration95/applyd/issues/8"
+    },
+    "outcomes": {
+      "number": 9,
+      "url": "https://github.com/Collaboration95/applyd/issues/9"
+    },
+    "demo-data": {
+      "number": 10,
+      "url": "https://github.com/Collaboration95/applyd/issues/10"
+    },
+    "sprite": {
+      "number": 11,
+      "url": "https://github.com/Collaboration95/applyd/issues/11"
+    },
+    "extractor": {
+      "number": 12,
+      "url": "https://github.com/Collaboration95/applyd/issues/12"
+    },
+    "kill-switch": {
+      "number": 13,
+      "url": "https://github.com/Collaboration95/applyd/issues/13"
+    },
+    "cleanup-run": {
+      "number": 14,
+      "url": "https://github.com/Collaboration95/applyd/issues/14"
+    },
+    "review-agent": {
+      "number": 15,
+      "url": "https://github.com/Collaboration95/applyd/issues/15"
+    },
+    "dashboard-v2": {
+      "number": 16,
+      "url": "https://github.com/Collaboration95/applyd/issues/16"
+    },
+    "gmail-sync": {
+      "number": 17,
+      "url": "https://github.com/Collaboration95/applyd/issues/17"
+    },
+    "weekly-report": {
+      "number": 18,
+      "url": "https://github.com/Collaboration95/applyd/issues/18"
+    },
+    "readme": {
+      "number": 19,
+      "url": "https://github.com/Collaboration95/applyd/issues/19"
+    },
+    "scope-guard": {
+      "number": 20,
+      "url": "https://github.com/Collaboration95/applyd/issues/20"
+    },
+    "skills": {
+      "number": 21,
+      "url": "https://github.com/Collaboration95/applyd/issues/21"
+    },
+    "contacts": {
+      "number": 22,
+      "url": "https://github.com/Collaboration95/applyd/issues/22"
+    },
+    "schedule": {
+      "number": 23,
+      "url": "https://github.com/Collaboration95/applyd/issues/23"
+    },
+    "computer-use": {
+      "number": 24,
+      "url": "https://github.com/Collaboration95/applyd/issues/24"
+    },
+    "outreach-drafts": {
+      "number": 25,
+      "url": "https://github.com/Collaboration95/applyd/issues/25"
+    }
+  },
+  "project": {
+    "number": 17,
+    "url": "https://github.com/users/Collaboration95/projects/17"
+  }
+}

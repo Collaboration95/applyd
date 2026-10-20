@@ -21,7 +21,7 @@ class ListingError(ValueError):
 TEXT_FIELDS = {
     "company", "role", "title", "location", "job_description", "platform",
     "platform_job_id", "employer_requisition_id", "source", "workplace_type",
-    "employment_type", "posted_age", "applied_by", "notes",
+    "employment_type", "posted_age", "applied_by", "notes", "country",
 }
 URL_FIELDS = {
     "listing_url", "application_url", "canonical_listing_url", "canonical_url",

@@ -35,14 +35,16 @@ import outcomes
 import batches
 import reviewer
 import retry_policy
+import eligibility
 from export_recovery import after_mutation, recover, export_state, STATE_PATH as EXPORT_STATE_PATH
 from zoneinfo import ZoneInfo
 from uuid import uuid4
 
 STATUSES = {"discovered", "preparing", "awaiting_answer", "ready", "submitted",
             "submission_uncertain", "failed", "skipped", "rejected", "interview", "withdrawn",
-            "saved", "dry_run_complete", "acknowledged", "assessment", "offer"}
+            "needs_review", "saved", "dry_run_complete", "acknowledged", "assessment", "offer"}
 TRANSITIONS = {
+    "needs_review": {"preparing", "skipped"},
     "discovered": {"preparing", "skipped"},
     "preparing": {"awaiting_answer", "ready", "failed", "skipped", "dry_run_complete"},
     "awaiting_answer": {"preparing", "skipped"},
@@ -478,6 +480,30 @@ def check_scope(root, record, url, now):
     raise ValueError("off_scope: application destination is outside the run allowlist")
 
 
+def listing_decision(root, record, now):
+    listing = dict(record)
+    if record.get("job_description_path"):
+        path = root / record["job_description_path"]
+        if digest(path) != record.get("job_description_sha256"):
+            raise ValueError("eligibility: captured description changed")
+        listing["job_description"] = path.read_text()
+    bank_path = root / "profile/answers.json"
+    facts = eligibility.confirmed_facts(read(bank_path) if bank_path.exists() else {"answers": []}, listing, now)
+    policies = [settings.load_settings(root)]
+    if record.get("run_id"):
+        policies.append(settings.load_run(root, record["run_id"])["settings"])
+    decisions = [eligibility.evaluate(listing, policy, facts) for policy in policies]
+    decision = "excluded" if any(d["decision"] == "excluded" for d in decisions) else "needs_review" if any(d["decision"] == "needs_review" for d in decisions) else "eligible"
+    return {"decision": decision, "reason_codes": sorted({code for d in decisions for code in d["reason_codes"]})}
+
+
+def require_eligible(root, record, now):
+    decision = listing_decision(root, record, now)
+    if decision["decision"] != "eligible":
+        raise ValueError("eligibility_" + decision["decision"] + ": " + ",".join(decision["reason_codes"]))
+    return decision
+
+
 def preflight(root, record, now):
     work_guard(root, record.get("run_id"), now, "preflight")
     if record.get("application_id"):
@@ -492,6 +518,7 @@ def preflight(root, record, now):
     if record.get("submissions") or record.get("submission_intent"):
         raise ValueError("Confirmed or unfinished submission requires reconciliation; never replay Submit")
     settings.check_submission(root, record, now)
+    require_eligible(root, record, now)
     check_scope(root, record, record.get("application_url") or record.get("destination_url") or record["canonical_listing_url"], now)
     if record.get("source") != "linkedin_job_page":
         raise ValueError("source: current LinkedIn job-page capture is required before submission")
@@ -585,6 +612,8 @@ def capture(root, data, now, deferred=False):
     if reason:
         data.setdefault("location", "")
         data.setdefault("job_description", "")
+    decision = listing_decision(root, data, now)
+    reason = reason or (decision["reason_codes"][0] if decision["decision"] != "eligible" else None)
     canonical = canonical_url(data["listing_url"])
     if not (root / "applications/index/.initialized").exists():
         seen_index.reindex(root, records(root), canonical_url)
@@ -598,13 +627,13 @@ def capture(root, data, now, deferred=False):
     directory.mkdir(parents=True, exist_ok=False)
     description = data.pop("job_description")
     (directory / "job-description.txt").write_text(description)
-    status = "skipped" if reason else "saved" if policy["mode"] == "save_only" else "discovered"
+    status = ("skipped" if decision["decision"] == "excluded" else "needs_review") if reason else "saved" if policy["mode"] == "save_only" else "discovered"
     record = {**data, "application_id": application_id, "canonical_listing_url": canonical,
               "captured_at": now.isoformat(), "status": status, "status_updated_at": now.isoformat(),
               "job_description_path": str((directory / "job-description.txt").relative_to(root)),
               "job_description_sha256": digest(directory / "job-description.txt"),
               "events": [{"at": now.isoformat(), "status": status, "reason": reason}], "submissions": [],
-              "stop_reason": reason}
+              "stop_reason": reason, "eligibility": decision}
     atomic_json(directory / "record.json", record)
     seen_index.update(root, record, canonical_url)
     return finish_mutation(root, {"application_id": application_id, "record": str(directory / "record.json"), "duplicate": False, "status": status, "reason": reason}, deferred)
@@ -617,6 +646,7 @@ def prepare_answers(root, application_id, questions, now, deferred=False):
     retry_guard(record, now)
     if record.get("submissions") or record["status"] in {"submitted", "submission_uncertain"}:
         raise ValueError("Cannot prepare answers for a confirmed or uncertain submission")
+    require_eligible(root, record, now)
     prepared = answer_core.prepare_answers(root, record, questions, now)
     if not prepared["ready"]:
         record = retry_policy.next_retry_state(record, "unknown_answer", now, MAX_RETRIES,
@@ -636,7 +666,7 @@ def requeue_answers(root, now):
         resolve(read(root / "resumes/registry.json"), scope, "application", now, root)
         return True
     def eligible(root, record, now):
-        return settings.eligibility(record, settings.load_settings(root)) is None
+        return listing_decision(root, record, now)["decision"] == "eligible"
     result = answer_core.requeue(root, now, resume_check=resume_check, eligibility_check=eligible)
     runnable, waiting = [], []
     for update in result["updates"] + result["waiting"]:
@@ -727,6 +757,7 @@ def event(root, args, now, deferred=False):
         persist_record(root, updated)
         return finish_mutation(root, {"application_id": args.id, "status": updated["status"]}, deferred)
     if status in {"preparing", "ready"}:
+        require_eligible(root, record, now)
         work_guard(root, record.get("run_id"), now, "event")
         if status == "preparing" and retry_policy.check_retry(record, now, MAX_RETRIES).decision == retry_policy.Decision.WAITING_ANSWER:
             return finish_mutation(root, {"application_id": args.id, "status": record["status"],
@@ -979,6 +1010,8 @@ def main():
     review = commands.add_parser("review-form")
     review.add_argument("--id", required=True)
     review.add_argument("--visible", type=Path, required=True)
+    eligible = commands.add_parser("eligibility", help="Evaluate captured full listing without a model")
+    eligible.add_argument("--id", required=True)
     args = parser.parse_args()
     root = select_root(args.workspace)
     try:
@@ -1111,6 +1144,8 @@ def main():
                 result = cleanup.register_tab(root, args.run_id, args.window_id, args.tab_id, args.url, args.id, now)
             elif args.command == "batch-progress":
                 result = batches.batch_progress(records(root), args.batch_id, args.target, read(args.categories) if args.categories else None)
+            elif args.command == "eligibility":
+                result = listing_decision(root, read(root / "applications/records" / slug(args.id) / "record.json"), now)
             elif args.command == "review-form":
                 result = review_form(root, args.id, read(args.visible), now, args.defer_export)
             else:

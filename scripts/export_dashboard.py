@@ -10,6 +10,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 from workspace_config import select_root
 from settings import load_settings
+from dashboard_payload import enrich_payload
 
 ROOT = Path(__file__).resolve().parents[1]
 SGT = ZoneInfo("Asia/Singapore")
@@ -40,12 +41,14 @@ def local_file(root, relative):
     return path
 
 
-def export_dashboard(root=ROOT):
+def export_dashboard(root=ROOT, snapshot=None):
     root = root.resolve()
     settings = load_settings(root)
     applications = []
-    for source in sorted((root / "applications/records").glob("*/record.json")):
-        record = json.loads(source.read_text())
+    if snapshot is None:
+        snapshot = [json.loads(source.read_text()) for source in sorted((root / "applications/records").glob("*/record.json"))]
+    snapshot = list(snapshot)
+    for record in snapshot:
         def resume(saved):
             path = local_file(root, saved.get("exact_resume_copy"))
             return {"id": saved.get("id"), "file": path.name if path else None,
@@ -69,6 +72,7 @@ def export_dashboard(root=ROOT):
     applications.sort(key=lambda app: app.get("updated_at") or "", reverse=True)
     generated_at = datetime.now(ZoneInfo(settings["timezone"])).isoformat()
     payload = {"timezone": settings["timezone"], "settings": settings, "generated_at": generated_at, "applications": applications}
+    payload = enrich_payload(root, snapshot, payload, generated_at)
     directory = root / "dashboard/data"
     write_json(directory / "applications.json", payload)
     # Classic script works from file://; browsers commonly block fetch() of local JSON.
@@ -79,4 +83,10 @@ def export_dashboard(root=ROOT):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", type=Path)
-    print(json.dumps(export_dashboard(select_root(parser.parse_args().workspace)), indent=2))
+    root = select_root(parser.parse_args().workspace)
+    from workspace import writer, export_csv
+    from export_recovery import recover
+    with writer(root):
+        result = recover(root, export_csv)
+    print(json.dumps(result, indent=2))
+    raise SystemExit(0 if result["ok"] else 1)

@@ -24,7 +24,7 @@ DIRECTORIES = (
     "profile", "projects", "resumes", "resumes/drafts", "applications", "dashboard",
     "applications/records", "applications/runs", "applications/batches",
 )
-DASHBOARD_ASSETS = ("index.html", "app.js", "runs.js", "style.css")
+DASHBOARD_ASSETS = ("index.html", "app.js", "runs.js", "control.js", "style.css")
 
 
 class SetupError(ValueError):

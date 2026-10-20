@@ -31,6 +31,7 @@ import safety
 import scope_guard
 import setup_workspace
 import cleanup
+from export_recovery import after_mutation, recover, export_state
 from zoneinfo import ZoneInfo
 
 STATUSES = {"discovered", "preparing", "awaiting_answer", "ready", "submitted",
@@ -68,6 +69,15 @@ def atomic_json(path, value):
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
+
+
+def finish_mutation(root, result, deferred=False, repeated=False):
+    if repeated and not export_state(root)["dirty"]:
+        envelope = {"mutation": {**result, "ok": True}, "export": {"ok": True, "status": "unchanged"}}
+    else:
+        envelope = after_mutation(root, result, export_csv, deferred=deferred)
+    # Preserve the existing local API while exposing independent mutation/export outcomes.
+    return {**result, **envelope}
 
 
 @contextmanager
@@ -248,7 +258,7 @@ def check_scope(root, record, url, now):
     record["events"].append({"at": now.isoformat(), "status": record["status"], "reason": "off_scope"})
     atomic_json(root / "applications/records" / slug(record["application_id"]) / "record.json", record)
     seen_index.update(root, record, canonical_url)
-    export_csv(root)
+    finish_mutation(root, {"application_id": record["application_id"], "reason": "off_scope"})
     raise ValueError("off_scope: application destination is outside the run allowlist")
 
 
@@ -276,7 +286,7 @@ def preflight(root, record, now):
     return {"application_id": record["application_id"], "ready": True, "resume_id": current["id"]}
 
 
-def begin_submit(root, application_id, observed_url, session_id, now):
+def begin_submit(root, application_id, observed_url, session_id, now, deferred=False):
     """Reserve the browser and persist uncertainty before authorizing one click."""
     record_path = root / "applications/records" / slug(application_id) / "record.json"
     record = read(record_path)
@@ -305,9 +315,8 @@ def begin_submit(root, application_id, observed_url, session_id, now):
     record["events"].append({"at": now.isoformat(), "status": "submission_uncertain", "reason": "submit_intent", "attempt_id": attempt_id})
     atomic_json(record_path, record)
     seen_index.update(root, record, canonical_url)
-    export_csv(root)
-    return {"application_id": application_id, "attempt_id": attempt_id, "click_authorized": True,
-            "on_interruption": "submission_uncertain; reconcile with evidence before retry"}
+    return finish_mutation(root, {"application_id": application_id, "attempt_id": attempt_id, "click_authorized": True,
+            "on_interruption": "submission_uncertain; reconcile with evidence before retry"}, deferred)
 
 
 def recover_submit(root, now):
@@ -330,7 +339,7 @@ def recover_submit(root, now):
     return {"recovered": True, "application_id": claim["application_id"], "requires_reconciliation": True}
 
 
-def capture(root, data, now):
+def capture(root, data, now, deferred=False):
     work_guard(root, data.get("run_id") if isinstance(data, dict) else None, now, "capture")
     data = dict(data)
     if data.get("source") != "linkedin_job_page":
@@ -354,7 +363,7 @@ def capture(root, data, now):
     if old:
         if old["key"].startswith("xpost-"):
             raise ValueError(f"Possible cross-post/repost of {old['application_id']}; reconcile before capturing again")
-        return {"duplicate": True, "application_id": old["application_id"], "status": old["status"]}
+        return finish_mutation(root, {"duplicate": True, "application_id": old["application_id"], "status": old["status"]}, deferred, repeated=True)
     application_id = "app-" + now.strftime("%Y-%m-%d") + "-" + hashlib.sha256(canonical.encode()).hexdigest()[:10]
     directory = root / "applications/records" / application_id
     directory.mkdir(parents=True, exist_ok=False)
@@ -369,11 +378,10 @@ def capture(root, data, now):
               "stop_reason": reason}
     atomic_json(directory / "record.json", record)
     seen_index.update(root, record, canonical_url)
-    export_csv(root)
-    return {"application_id": application_id, "record": str(directory / "record.json"), "duplicate": False, "status": status, "reason": reason}
+    return finish_mutation(root, {"application_id": application_id, "record": str(directory / "record.json"), "duplicate": False, "status": status, "reason": reason}, deferred)
 
 
-def prepare_answers(root, application_id, questions, now):
+def prepare_answers(root, application_id, questions, now, deferred=False):
     path = root / "applications/records" / slug(application_id) / "record.json"
     record = read(path)
     work_guard(root, record.get("run_id"), now, "prepare-answers")
@@ -386,8 +394,7 @@ def prepare_answers(root, application_id, questions, now):
     record["events"].append({"at": now.isoformat(), "status": prepared["status"], "reason": "unknown_answer" if not prepared["ready"] else "answers_prepared"})
     atomic_json(path, record)
     seen_index.update(root, record, canonical_url)
-    export_csv(root)
-    return prepared
+    return finish_mutation(root, prepared, deferred)
 
 
 def requeue_answers(root, now):
@@ -410,7 +417,7 @@ def requeue_answers(root, now):
     return result
 
 
-def event(root, args, now):
+def event(root, args, now, deferred=False):
     directory = root / "applications/records" / slug(args.id)
     record = read(directory / "record.json")
     status = args.status
@@ -419,7 +426,7 @@ def event(root, args, now):
     if status not in STATUSES or status == "discovered":
         raise ValueError("Invalid event status")
     if status == record["status"]:
-        return {"application_id": args.id, "status": status, "already_recorded": True}
+        return finish_mutation(root, {"application_id": args.id, "status": status, "already_recorded": True}, deferred, repeated=True)
     if status not in TRANSITIONS[record["status"]]:
         raise ValueError(f"Invalid transition {record['status']} -> {status}; reconcile before retrying")
     if record["status"] == "submission_uncertain" and status != "submitted" and (not args.evidence or not args.note):
@@ -482,11 +489,11 @@ def event(root, args, now):
         if record.get("submission_intent"):
             record.pop("submission_intent")
             atomic_json(directory / "record.json", record)
-    export_csv(root)
-    return {"application_id": args.id, "status": status}
+    return finish_mutation(root, {"application_id": args.id, "status": status}, deferred)
 
 
-def export_csv(root):
+def export_csv(root, snapshot=None):
+    snapshot = records(root) if snapshot is None else list(snapshot)
     fields = ["application_id", "company", "role", "location", "platform", "platform_job_id",
               "employer_requisition_id", "listing_url", "application_url", "captured_at", "status",
               "status_updated_at", "resume_id", "source_master_id", "resume_sha256", "record_path",
@@ -498,7 +505,7 @@ def export_csv(root):
         with os.fdopen(fd, "w", newline="") as stream:
             output = csv.DictWriter(stream, fieldnames=fields)
             output.writeheader()
-            for record in records(root):
+            for record in snapshot:
                 saved = record["submissions"][-1] if record["submissions"] else record.get("prepared", {})
                 row = {key: record.get(key, "") for key in fields}
                 row.update(resume_id=saved.get("id", ""), source_master_id=saved.get("source_master_id", ""),
@@ -509,13 +516,27 @@ def export_csv(root):
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
-    dashboard = export_dashboard(root)
-    return {"path": str(target), "records": len(records(root)), "dashboard": dashboard["path"]}
+    dashboard = export_dashboard(root, snapshot=snapshot)
+    return {"path": str(target), "records": len(snapshot), "dashboard": dashboard["path"]}
+
+
+def import_settings(root, change, deferred=False):
+    if (not isinstance(change, dict) or set(change) != {"schema_version", "base_hash", "changes"}
+            or type(change["schema_version"]) is not int or change["schema_version"] != 1
+            or not isinstance(change["changes"], dict) or not change["changes"]):
+        raise ValueError("Invalid settings-change schema")
+    current = settings.load_settings(root)
+    if change["base_hash"] != settings.settings_hash(current):
+        raise ValueError("Stale settings base; refresh before importing")
+    updated = settings._validate({**current, **change["changes"]})
+    atomic_json(root / "settings.json", updated)
+    return finish_mutation(root, {"persisted": True, "settings_hash": settings.settings_hash(updated)}, deferred)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", type=Path, help="Private data root (overrides APPLYD_WORKSPACE)")
+    parser.add_argument("--defer-export", action="store_true", help="Persist mutations now and run export once after the batch")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("status")
     commands.add_parser("init", help="Initialize a fresh empty private workspace")
@@ -572,6 +593,8 @@ def main():
     import_answers.add_argument("--file", type=Path, required=True)
     import_answers.add_argument("--preview", action="store_true")
     commands.add_parser("requeue")
+    settings_import = commands.add_parser("settings-import")
+    settings_import.add_argument("--file", type=Path, required=True)
     safety_check = commands.add_parser("safety-check")
     safety_check.add_argument("--file", type=Path, required=True, help="Current-page text and URL JSON")
     safety_check.add_argument("--run-id", required=True)
@@ -599,7 +622,7 @@ def main():
     try:
         if args.command == "init":
             result = setup_workspace.init_workspace(root)
-            export_csv(root)
+            result = finish_mutation(root, result)
             print(json.dumps(result, indent=2))
             return
         if args.command == "doctor":
@@ -646,9 +669,9 @@ def main():
                     raise ListingError("input", "invalid JSON") from exc
                 if args.run_id:
                     data["run_id"] = args.run_id
-                result = capture(root, data, now)
+                result = capture(root, data, now, args.defer_export)
             elif args.command == "event":
-                result = event(root, args, now)
+                result = event(root, args, now, args.defer_export)
             elif args.command == "preflight":
                 result = preflight(root, read(root / "applications/records" / slug(args.id) / "record.json"), now)
             elif args.command == "reindex":
@@ -664,11 +687,13 @@ def main():
                 reason = settings.eligibility(data, policy)
                 result = capture(root, data, now) if reason else {"eligible": True}
             elif args.command == "begin-submit":
-                result = begin_submit(root, args.id, args.observed_url, args.session_id, now)
+                result = begin_submit(root, args.id, args.observed_url, args.session_id, now, args.defer_export)
             elif args.command == "recover-submit":
                 result = recover_submit(root, now)
+                if result["recovered"]:
+                    result = finish_mutation(root, result, args.defer_export)
             elif args.command == "prepare-answers":
-                result = prepare_answers(root, args.id, read(args.questions), now)
+                result = prepare_answers(root, args.id, read(args.questions), now, args.defer_export)
             elif args.command == "context":
                 result = answer_core.context(root, now)
                 if args.run_id:
@@ -679,10 +704,12 @@ def main():
                 if not args.preview:
                     result["queue"] = requeue_answers(root, now)
                     answer_core.context(root, now)
-                    export_csv(root)
+                    result = finish_mutation(root, result, args.defer_export)
             elif args.command == "requeue":
                 result = requeue_answers(root, now)
-                export_csv(root)
+                result = finish_mutation(root, result, args.defer_export)
+            elif args.command == "settings-import":
+                result = import_settings(root, read(args.file), args.defer_export)
             elif args.command == "safety-check":
                 page = read(args.file)
                 detection = safety.detect(page.get("text", ""), page.get("url", ""))
@@ -702,13 +729,15 @@ def main():
             elif args.command == "run-summary":
                 result = cleanup.run_summary(root, args.run_id, now)
             elif args.command == "cleanup-run":
-                result = cleanup.cleanup_run(root, args.run_id, now, execute=args.execute, export_callback=lambda: export_csv(root))
+                result = cleanup.cleanup_run(root, args.run_id, now, execute=args.execute, export_callback=lambda: recover(root, export_csv))
             elif args.command == "register-tab":
                 work_guard(root, args.run_id, now, "register-tab")
                 result = cleanup.register_tab(root, args.run_id, args.window_id, args.tab_id, args.url, args.id, now)
             else:
-                result = export_csv(root)
+                result = {"export": recover(root, export_csv)}
         print(json.dumps(result, indent=2, ensure_ascii=False))
+        if args.command == "export" and not result["export"]["ok"]:
+            parser.exit(1)
     except safety.SafetyError as exc:
         parser.exit(2, f"{exc}\n")
     except ListingError as exc:

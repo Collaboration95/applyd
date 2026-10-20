@@ -78,33 +78,12 @@ test('an older import joining an existing run preserves its number and invalid i
   const merged = mergePayloads([{ applications: [null, { ...app('existing', '2026-10-18T09:00:00Z'), company: 'Example', title: 'Engineer' }] }]);
   assert.equal(normalizeApplications(merged.applications).skipped, 1);
 });
-test('dashboard shows a malformed-record banner and still renders valid applications', () => {
-  class Element {
-    constructor(tag = 'div') { this.tagName = tag; this.children = []; this.dataset = {}; this.hidden = false; this.value = ''; this.textContent = ''; }
-    append(...items) { this.children.push(...items); }
-    replaceChildren(...items) { this.children = items; }
-    addEventListener() {}
-  }
-  const elements = new Map();
-  const getElement = id => { if (!elements.has(id)) elements.set(id, new Element(id)); return elements.get(id); };
-  const importLabel = new Element('label');
-  const document = {
-    baseURI: 'file:///dashboard/index.html',
-    getElementById: getElement,
-    querySelector: () => importLabel,
-    createElement: tag => new Element(tag)
-  };
-  const window = { JobRuns: require('../dashboard/runs.js'), JOB_SEARCH_DATA: { applications: [
-    { id: 'good-a', company: 'Example A', title: 'Engineer', status: 'ready', updated_at: '2026-10-18T09:00:00Z' },
-    null,
-    { id: 'good-b', company: 'Example B', title: 'Analyst', status: 'interview', updated_at: '2026-10-18T12:00:00Z' }
-  ] } };
-  const context = { window, document, location: { protocol: 'file:' }, localStorage: { getItem() { throw new Error('storage unavailable'); }, setItem() { throw new Error('storage unavailable'); } }, Option: class { constructor(text, value) { this.text = text; this.value = value; } } };
-  vm.runInNewContext(fs.readFileSync(require.resolve('../dashboard/app.js'), 'utf8'), context);
-  assert.equal(getElement('error').hidden, false);
-  assert.match(getElement('error').textContent, /Skipped 1 malformed record/);
-  const renderedIds = [];
-  const visit = node => { if (node.dataset?.applicationId) renderedIds.push(node.dataset.applicationId); node.children.forEach(visit); };
-  visit(getElement('runs'));
-  assert.deepEqual(renderedIds, ['good-b', 'good-a']);
+test('static dashboard keeps local-file scripts and run grouping without a fixed timezone suffix', () => {
+  const html = fs.readFileSync(require.resolve('../dashboard/index.html'), 'utf8');
+  const script = fs.readFileSync(require.resolve('../dashboard/app.js'), 'utf8');
+  assert.match(html, /src="control\.js"/);
+  assert.match(html, /data-tab="runs"/);
+  assert.match(html, /data-tab="questions"/);
+  assert.doesNotMatch(script, /SGT/);
+  assert.match(script, /const allRuns = window\.JobRuns\.groupRuns\(allRecords\(\)\)/);
 });

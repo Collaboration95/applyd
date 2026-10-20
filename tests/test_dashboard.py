@@ -1,5 +1,6 @@
 import json
 import sys
+import subprocess
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -72,6 +73,16 @@ class DashboardExportTests(unittest.TestCase):
         html = (dashboard / "index.html").read_text()
         script = (dashboard / "app.js").read_text()
         self.assertIn("<title>Applications</title>", html)
-        self.assertEqual(html.count("<option"), 1)
-        self.assertIn("availableStatuses(state.data.applications)", script)
-        self.assertIn("matchesCurrentStatus(app, state.status)", script)
+        self.assertIn('data-tab="applications"', html)
+        self.assertIn('data-tab="questions"', html)
+        self.assertIn('data-tab="settings"', html)
+        self.assertIn("filterApplications(allRecords()", script)
+        self.assertIn("answer_receipts", script)
+
+    def test_displayed_import_commands_are_real_cli_subcommands(self):
+        root = Path(__file__).resolve().parents[1]
+        for command in ("import-answers", "settings-import"):
+            result = subprocess.run([sys.executable, str(root / "scripts/workspace.py"), command, "--help"], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("--file", result.stdout)
+            self.assertIn(f"{command} --file", (root / "dashboard/app.js").read_text())

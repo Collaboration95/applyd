@@ -56,7 +56,7 @@ class DashboardExportTests(unittest.TestCase):
         self.assertFalse((self.root / "dashboard/data/days").exists())
 
     def test_capture_refreshes_static_export_without_a_server(self):
-        workspace.capture(self.root, {"company": "Example", "role": "Engineer", "location": "Singapore",
+        workspace.capture(self.root, {"source": "linkedin_job_page", "company": "Example", "role": "Engineer", "location": "Singapore",
                           "listing_url": "https://example.com/job/1", "job_description": "Complete description"},
                           datetime(2026, 10, 18, tzinfo=timezone.utc))
         self.assertEqual(len(self.payload()["applications"]), 1)

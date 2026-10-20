@@ -40,7 +40,7 @@ class WorkflowTests(unittest.TestCase):
         w.atomic_json(self.root / "resumes/registry.json", self.registry)
 
     def job(self, **changes):
-        return {"company": "Example", "role": "Engineer", "location": "Singapore",
+        return {"source": "linkedin_job_page", "company": "Example", "role": "Engineer", "location": "Singapore",
                 "platform": "linkedin", "platform_job_id": "123456", "listing_url": "https://www.linkedin.com/jobs/view/123456?trk=search",
                 "job_description": "Full role text\nMust retain every line.", **changes}
 
@@ -152,6 +152,14 @@ class WorkflowTests(unittest.TestCase):
         (self.root / record["prepared"]["answers_path"]).write_text("[]")
         with self.assertRaisesRegex(ValueError, "snapshot was modified"):
             w.preflight(self.root, record, self.now)
+
+    def test_preflight_rejects_and_records_off_scope_destination(self):
+        identity = self.ready()
+        record = self.record(identity)
+        record["application_url"] = "https://outside.example.org/job/1"
+        with self.assertRaisesRegex(ValueError, "off_scope"):
+            w.preflight(self.root, record, self.now)
+        self.assertEqual(self.record(identity)["stop_reason"], "off_scope")
 
     def test_preflight_revalidates_answer_expiry_after_preparation(self):
         identity = self.ready()

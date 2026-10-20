@@ -21,7 +21,7 @@ class SeenTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.now = datetime(2026, 10, 1, tzinfo=timezone.utc)
-        self.job = dict(company="Fictional Co", role="Engineer", location="Example City", platform="linkedin",
+        self.job = dict(source="linkedin_job_page", company="Fictional Co", role="Engineer", location="Example City", platform="linkedin",
                         platform_job_id="123", employer_requisition_id="REQ-1",
                         listing_url="https://www.linkedin.com/jobs/view/123", job_description="Synthetic full text")
         self.app = w.capture(self.root, dict(self.job), self.now)["application_id"]

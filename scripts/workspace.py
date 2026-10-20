@@ -28,6 +28,7 @@ import settings
 import answers as answer_core
 from listing_input import ListingError, validate_listing
 import safety
+import scope_guard
 from zoneinfo import ZoneInfo
 
 STATUSES = {"discovered", "preparing", "awaiting_answer", "ready", "submitted",
@@ -233,6 +234,22 @@ def work_guard(root, run_id, now, command):
         raise
 
 
+def check_scope(root, record, url, now):
+    policies = [settings.load_settings(root)]
+    if record.get("run_id"):
+        policies.append(settings.load_run(root, record["run_id"])["settings"])
+    if all(scope_guard.allowed(url, policy) for policy in policies):
+        return {"allowed": True}
+    record.update(stop_reason="off_scope", off_scope_url=url, status_updated_at=now.isoformat())
+    if not record.get("submissions") and record["status"] != "submission_uncertain":
+        record["status"] = "failed"
+    record["events"].append({"at": now.isoformat(), "status": record["status"], "reason": "off_scope"})
+    atomic_json(root / "applications/records" / slug(record["application_id"]) / "record.json", record)
+    seen_index.update(root, record, canonical_url)
+    export_csv(root)
+    raise ValueError("off_scope: application destination is outside the run allowlist")
+
+
 def preflight(root, record, now):
     work_guard(root, record.get("run_id"), now, "preflight")
     if record["status"] != "ready":
@@ -243,6 +260,9 @@ def preflight(root, record, now):
     if record.get("submissions") or record.get("submission_intent"):
         raise ValueError("Confirmed or unfinished submission requires reconciliation; never replay Submit")
     settings.check_submission(root, record, now)
+    check_scope(root, record, record.get("application_url") or record.get("destination_url") or record["canonical_listing_url"], now)
+    if record.get("source") != "linkedin_job_page":
+        raise ValueError("source: current LinkedIn job-page capture is required before submission")
     current = resolve(read(root / "resumes/registry.json"), prepared["scope"], "application", now, root)
     if current["id"] != prepared["id"]:
         raise ValueError("Prepared resume has been replaced; prepare again")
@@ -311,6 +331,8 @@ def recover_submit(root, now):
 def capture(root, data, now):
     work_guard(root, data.get("run_id") if isinstance(data, dict) else None, now, "capture")
     data = dict(data)
+    if data.get("source") != "linkedin_job_page":
+        raise ListingError("source", "only linkedin_job_page facts are accepted")
     policy = settings.load_settings(root)
     reason = settings.eligibility(data, policy)
     if data.get("run_id"):
@@ -554,6 +576,9 @@ def main():
     resume_stop.add_argument("--run-id", required=True)
     resume_stop.add_argument("--operator", required=True)
     resume_stop.add_argument("--note", required=True)
+    scope = commands.add_parser("scope-check")
+    scope.add_argument("--id", required=True)
+    scope.add_argument("--url", required=True)
     args = parser.parse_args()
     root = select_root(args.workspace)
     try:
@@ -646,6 +671,10 @@ def main():
             elif args.command == "resume-stop":
                 incident = safety.resume_stop(root, args.run_id, now, {"operator": args.operator, "note": args.note}, "resume-stop")
                 result = {"resolved": True, "stop_id": incident["stop_id"]}
+            elif args.command == "scope-check":
+                record = read(root / "applications/records" / slug(args.id) / "record.json")
+                work_guard(root, record.get("run_id"), now, "scope-check")
+                result = check_scope(root, record, args.url, now)
             else:
                 result = export_csv(root)
         print(json.dumps(result, indent=2, ensure_ascii=False))

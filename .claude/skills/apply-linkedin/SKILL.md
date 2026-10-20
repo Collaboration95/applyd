@@ -15,8 +15,9 @@ Use synthetic fixtures and stub browser actions when verifying implementation.
 7. Pass exact observed questions to `workspace.py prepare-answers --id <app> --questions <adapter-questions.json>`. Leave unresolved jobs waiting and continue independent jobs.
 8. Resolve the selected resume immediately before upload: `python3 scripts/resolve_resume.py --scope <configured-scope> --purpose application`.
 9. Freeze the returned answer file with `workspace.py event --id <app> --status ready --resume-scope <scope> --answers <answers-path> --run-id "$APPLYD_RUN_ID"`.
-10. In dry_run mode record `dry_run_complete` without Submit. In save_only mode stop after capture.
-11. For an authorized apply-mode submission, run `workspace.py preflight --id <app>`, then `workspace.py begin-submit --id <app> --observed-url <current-job-url> --session-id <writer-id>` immediately before the one Submit click.
-12. Record `submitted` only after observed confirmation using `workspace.py event --id <app> --status submitted --evidence <private-confirmation-file>`. An interrupted click remains uncertain; reconcile with evidence before any retry.
+10. Delegate a read-only second reviewer to observe the current filled form and selected attachment. Pass its independent snapshot to `workspace.py review-form --id <app> --visible <snapshot.json>`; a mismatch blocks submission.
+11. In dry_run mode record `dry_run_complete` without Submit. In save_only mode stop after capture.
+12. For an authorized apply-mode submission, run `workspace.py preflight --id <app>`, then `workspace.py begin-submit --id <app> --observed-url <current-job-url> --session-id <writer-id>` immediately before the one Submit click.
+13. Record `submitted` only after observed confirmation using `workspace.py event --id <app> --status submitted --evidence <private-confirmation-file>`. An interrupted click remains uncertain; reconcile with evidence before any retry.
 
 Use the `python3 scripts/workspace.py` prefix for commands abbreviated as `workspace.py` above.

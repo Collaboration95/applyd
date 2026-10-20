@@ -142,3 +142,8 @@ __pycache__/
 !/tests/test_batches.py
 !/docs/outcomes.md
 !/docs/batches.md
+
+# Generic read-only form review and synthetic mismatch tests.
+!/scripts/reviewer.py
+!/tests/test_reviewer.py
+!/docs/reviewer.md

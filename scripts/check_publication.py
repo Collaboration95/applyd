@@ -24,6 +24,8 @@ GENERIC_FILES = frozenset({
     "scripts/export_dashboard.py", "scripts/check_publication.py", "scripts/workspace_config.py", "scripts/seen_index.py", "scripts/seen.sh",
     "scripts/settings.py", "settings.example.json", "docs/settings.md",
     "scripts/answers.py", "docs/answers.md",
+    "scripts/extract_linkedin.js", "scripts/listing_input.py", "docs/extractor.md",
+    "tests/fixtures/linkedin-easy-card.html", "tests/fixtures/linkedin-no-card.html", "tests/fixtures/linkedin-external.html",
     "dashboard/index.html", "dashboard/app.js", "dashboard/runs.js",
     "dashboard/style.css", "dashboard/README.md",
     "applications/job-input.example.json", "applications/TEMPLATE.md",

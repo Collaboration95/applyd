@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 import unicodedata
 import zipfile
+import sys
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -25,6 +26,7 @@ from workspace_config import select_root
 import seen_index
 import settings
 import answers as answer_core
+from listing_input import ListingError, validate_listing
 from zoneinfo import ZoneInfo
 
 STATUSES = {"discovered", "preparing", "awaiting_answer", "ready", "submitted",
@@ -496,7 +498,9 @@ def main():
     publish.add_argument("--review-days", type=int, default=30)
     publish.add_argument("--note", required=True)
     new = commands.add_parser("capture")
-    new.add_argument("--file", type=Path, required=True)
+    source = new.add_mutually_exclusive_group(required=True)
+    source.add_argument("--file", type=Path)
+    source.add_argument("--stdin", action="store_true")
     new.add_argument("--run-id")
     update = commands.add_parser("event")
     update.add_argument("--id", required=True)
@@ -565,7 +569,10 @@ def main():
             elif args.command == "release":
                 result = release(root, args, now)
             elif args.command == "capture":
-                data = read(args.file)
+                try:
+                    data = validate_listing(json.load(sys.stdin) if args.stdin else read(args.file))
+                except (json.JSONDecodeError, UnicodeError) as exc:
+                    raise ListingError("input", "invalid JSON") from exc
                 if args.run_id:
                     data["run_id"] = args.run_id
                 result = capture(root, data, now)
@@ -607,6 +614,8 @@ def main():
             else:
                 result = export_csv(root)
         print(json.dumps(result, indent=2, ensure_ascii=False))
+    except ListingError as exc:
+        parser.exit(2, f"listing_validation: {exc}\n")
     except (ValueError, KeyError, OSError, TypeError, subprocess.CalledProcessError, zipfile.BadZipFile) as exc:
         parser.exit(1, f"ERROR: {exc}\n")
 

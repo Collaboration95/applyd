@@ -76,3 +76,8 @@ __pycache__/
 
 # Synthetic crash-window and single-browser-writer checks.
 !/tests/test_submit_intent.py
+
+# Generic deterministic answer core and synthetic provenance fixtures.
+!/scripts/answers.py
+!/tests/test_answers.py
+!/docs/answers.md

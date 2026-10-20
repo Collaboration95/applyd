@@ -93,3 +93,9 @@ __pycache__/
 !/tests/fixtures/linkedin-no-card.html
 !/tests/fixtures/linkedin-external.html
 !/docs/extractor.md
+
+# Generic account-safety gate, detectors and synthetic stop fixtures.
+!/scripts/safety.py
+!/tests/test_safety.py
+!/tests/safety.test.cjs
+!/docs/safety.md

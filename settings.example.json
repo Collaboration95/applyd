@@ -21,5 +21,9 @@
   "browser": null,
   "resume_scope": null,
   "role_rules": {},
-  "follow_up_days": 14
+  "follow_up_days": 14,
+  "computer_use": {
+    "enabled": false,
+    "step_budget": 6
+  }
 }

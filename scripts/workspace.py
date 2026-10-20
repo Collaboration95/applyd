@@ -35,6 +35,7 @@ import cleanup
 import outcomes
 import batches
 import reviewer
+import computer_fallback
 import retry_policy
 import eligibility
 from export_recovery import after_mutation, recover, export_state, STATE_PATH as EXPORT_STATE_PATH
@@ -550,6 +551,8 @@ def begin_submit(root, application_id, observed_url, session_id, now, deferred=F
     if canonical_url(observed_url) != record["canonical_listing_url"]:
         raise ValueError("observed_job_mismatch: browser job differs from the prepared application")
     preflight(root, record, now)
+    if (root / "applications/computer-use.lock").exists():
+        raise ValueError("browser_claimed: computer-use writer is active; reconcile before Submit")
     keys = set(seen_index.identity_keys(record, canonical_url(record["listing_url"])))
     for other in records(root):
         if other.get("submissions") and keys.intersection(seen_index.identity_keys(other, canonical_url(other["listing_url"]))):
@@ -569,6 +572,9 @@ def begin_submit(root, application_id, observed_url, session_id, now, deferred=F
         stream.flush()
         os.fsync(stream.fileno())
     record = retry_policy.next_retry_state(record, "submission_uncertain", now, MAX_RETRIES)
+    if (root / "applications/computer-use.lock").exists():
+        # Keep the reserved claim: recovery must reconcile the interrupted intent.
+        raise ValueError("browser_claimed: computer-use writer raced with Submit; reconcile the saved claim")
     record.update(status="submission_uncertain", status_updated_at=now.isoformat(), submission_intent=claim)
     record["events"].append({"at": now.isoformat(), "status": "submission_uncertain", "reason": "submit_intent", "attempt_id": attempt_id})
     persist_record(root, record)
@@ -900,6 +906,38 @@ def contact_change(root, application_id, now, *, add=None, remove=None, email_te
     return finish_mutation(root, {"application_id": application_id, "contacts": updated.get("contacts", [])}, deferred)
 
 
+def fallback_session(root, application_id, run_id, session_id, plan, now, adapter=None, clock=None):
+    clock = clock or (lambda: datetime.now(ZoneInfo(settings.load_settings(root)["timezone"])))
+    def guard(phase):
+        current = clock()
+        record = read(root / "applications/records" / slug(application_id) / "record.json")
+        if record.get("run_id") != run_id or record.get("source") != "linkedin_job_page":
+            raise ValueError("fallback_run_or_source_mismatch")
+        work_guard(root, run_id, current, "computer-use")
+        retry_guard(record, current)
+        require_eligible(root, record, current)
+        settings.check_submission(root, {**record, "status": "ready"}, current)
+        check_scope(root, record, plan["initial_url"], current)
+        prepared = record.get("answer_preparation") or {}
+        if not prepared.get("answers_path") or not answer_core.validate_snapshot(root, record, read(root / prepared["answers_path"]), current)["valid"]:
+            raise ValueError("answer_validation")
+        return True
+    def current_resume():
+        record = read(root / "applications/records" / slug(application_id) / "record.json")
+        scope = record.get("prepared", {}).get("scope") or settings.load_settings(root)["resume_scope"]
+        return Path(resolve(read(root / "resumes/registry.json"), scope, "application", clock(), root)["path"])
+    try:
+        actions = [computer_fallback.Action(**value) for value in plan["actions"]]
+        result = computer_fallback.run_workspace_session(root, run_id, session_id, guard=guard,
+            adapter=adapter, clock=clock, initial_tab_id=plan["initial_tab_id"], initial_url=plan["initial_url"],
+            failure_kind=plan["failure_kind"], dom_failed=plan.get("dom_failed") is True,
+            actions=actions, resume_resolver=current_resume)
+        return {"outcome": result.outcome.value, "reason": result.reason,
+                "step_count": result.step_count, "record_ref": result.record_ref}
+    except (ValueError, KeyError, TypeError, OSError):
+        return {"outcome": "failed", "reason": "fallback_storage_or_input_blocker", "step_count": None, "record_ref": None}
+
+
 def import_settings(root, change, deferred=False):
     if (not isinstance(change, dict) or set(change) != {"schema_version", "base_hash", "changes"}
             or type(change["schema_version"]) is not int or change["schema_version"] != 1
@@ -1032,6 +1070,11 @@ def main():
     change.add_argument("--add", type=Path)
     change.add_argument("--remove")
     contact.add_argument("--email-evidence", type=Path)
+    fallback = commands.add_parser("computer-use", help="Validate a bounded fallback plan; an adapter is required to execute")
+    fallback.add_argument("--id", required=True)
+    fallback.add_argument("--run-id", required=True)
+    fallback.add_argument("--session-id", required=True)
+    fallback.add_argument("--plan", type=Path, required=True)
     args = parser.parse_args()
     root = select_root(args.workspace)
     try:
@@ -1170,11 +1213,15 @@ def main():
                 result = contact_change(root, args.id, now, add=read(args.add) if args.add else None,
                                         remove=args.remove, email_text=args.email_evidence.read_text() if args.email_evidence else None,
                                         deferred=args.defer_export)
+            elif args.command == "computer-use":
+                result = fallback_session(root, args.id, args.run_id, args.session_id, read(args.plan), now)
             elif args.command == "review-form":
                 result = review_form(root, args.id, read(args.visible), now, args.defer_export)
             else:
                 result = {"export": recover(root, export_csv)}
         print(json.dumps(result, indent=2, ensure_ascii=False))
+        if args.command == "computer-use" and result["outcome"] != "completed":
+            parser.exit(2)
         if args.command == "export" and not result["export"]["ok"]:
             parser.exit(1)
     except safety.SafetyError as exc:

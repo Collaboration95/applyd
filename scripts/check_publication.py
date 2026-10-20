@@ -36,6 +36,10 @@ GENERIC_FILES = frozenset({
     "scripts/retry_policy.py", "docs/retries.md",
     "scripts/eligibility.py", "docs/eligibility.md",
     "scripts/contacts.py", "docs/contacts.md",
+    "scripts/computer_fallback.py", "docs/computer-use.md", "tests/fixtures/fallback-form.html",
+    # Audited generic artifacts in the open read-only mail review branch.
+    "scripts/gmail_sync.py", "scripts/mail_import.py", "docs/gmail-sync.md",
+    ".claude/skills/gmail-sync/SKILL.md",
     "scripts/demo.py", "scripts/demo_gif.py", "scripts/screenshots.sh", "docs/demo.md",
     "demo/applications.json",
     # Audited generic artifacts in the open lean-workflow review branch.

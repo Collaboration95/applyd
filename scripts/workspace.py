@@ -34,8 +34,10 @@ import cleanup
 import outcomes
 import batches
 import reviewer
-from export_recovery import after_mutation, recover, export_state
+import retry_policy
+from export_recovery import after_mutation, recover, export_state, STATE_PATH as EXPORT_STATE_PATH
 from zoneinfo import ZoneInfo
+from uuid import uuid4
 
 STATUSES = {"discovered", "preparing", "awaiting_answer", "ready", "submitted",
             "submission_uncertain", "failed", "skipped", "rejected", "interview", "withdrawn",
@@ -51,6 +53,7 @@ TRANSITIONS = {
     "submitted": {"rejected", "interview", "withdrawn"},
     "interview": {"rejected", "withdrawn"}, "rejected": set(), "withdrawn": set(),
 }
+MAX_RETRIES = 3
 
 
 def read(path):
@@ -68,7 +71,14 @@ def atomic_json(path, value):
         with os.fdopen(fd, "w") as stream:
             json.dump(value, stream, indent=2, ensure_ascii=False)
             stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
         os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
@@ -247,6 +257,208 @@ def work_guard(root, run_id, now, command):
     except safety.SafetyBlocked:
         safety.notify_stop(root, now, safety.local_notification)
         raise
+    # Capture only saves already observed facts. Keep its indexed duplicate
+    # path free of record scans. Browser adapters must guard before navigation.
+    if command != "capture":
+        recovery = recover_submit(root, now)
+        if recovery["recovered"]:
+            finish_mutation(root, recovery)
+            if recovery["requires_reconciliation"]:
+                raise ValueError("submission_uncertain: reconcile the unfinished browser writer before new work")
+        browser_retry_guard(root, now)
+
+
+def retry_guard(record, now):
+    decision = retry_policy.check_retry(record, now, MAX_RETRIES)
+    if decision.decision == retry_policy.Decision.CONFIRMED:
+        raise ValueError("Confirmed application cannot retry")
+    if decision.decision == retry_policy.Decision.WAITING_ANSWER:
+        raise ValueError("answer_validation: retry_blocked waiting_answer")
+    if decision.decision == retry_policy.Decision.RECONCILIATION_REQUIRED:
+        raise ValueError("retry_blocked: reconciliation_required; reconcile with saved evidence")
+    if decision.decision != retry_policy.Decision.ELIGIBLE:
+        raise ValueError("retry_blocked: " + decision.decision.value)
+    return decision
+
+
+def validate_browser_incident(incident, now):
+    if not isinstance(incident, dict) or incident.get("reason") not in {"login", "page_changed"}:
+        raise ValueError("Invalid browser retry incident")
+    retry_policy.check_retry({"status": "failed", "retry_policy_version": 1, "retry_budget": MAX_RETRIES,
+                              "retry_counts": {}, "blocker": incident, "next_eligible_at": None}, now, MAX_RETRIES)
+
+
+def preserve_browser_incident(record):
+    incident = record.get("blocker") or {}
+    if ("browser_stop" not in record and incident.get("reason") in {"login", "page_changed"}
+            and incident.get("resume") is None):
+        return {**record, "browser_stop": json.loads(json.dumps(incident))}
+    return record
+
+
+def browser_retry_stops(root, now):
+    stops = []
+    for record in records(root):
+        # Validate even an exhausted/uncertain record; malformed state must not
+        # silently release a browser stop. The separate incident survives later
+        # confirmation/reconciliation and replacement of the retry blocker.
+        retry_policy.check_retry(record, now, MAX_RETRIES)
+        incident = record.get("browser_stop", record.get("blocker"))
+        if incident is None:
+            if "browser_stop" in record:
+                raise ValueError("Invalid browser retry incident")
+            continue
+        if not isinstance(incident, dict):
+            raise ValueError("Invalid browser retry incident")
+        if incident.get("reason") not in {"login", "page_changed"}:
+            if "browser_stop" in record:
+                raise ValueError("Invalid browser retry incident")
+            continue
+        validate_browser_incident(incident, now)
+        if incident.get("resume") is not None and "browser_stop" in record:
+            evidence_id = incident["resume"]["evidence_id"]
+            evidence = root / "applications/records" / slug(record["application_id"]) / "retry-evidence" / (evidence_id + ".bin")
+            content = evidence.read_bytes() if evidence.is_file() else b""
+            sha = hashlib.sha256(content).hexdigest()
+            if (not content.strip() or "evidence-" + sha != evidence_id
+                    or not any(e.get("reason") == "browser_resumed" and e.get("retry_blocker_id") == incident["id"]
+                               and e.get("evidence", {}).get("sha256") == sha for e in record["events"])):
+                raise ValueError("Browser resume evidence is missing or changed")
+        if incident.get("resume") is None:
+            stops.append({"application_id": record["application_id"],
+                          "blocker_id": incident["id"], "reason": incident["reason"]})
+    return stops
+
+
+def browser_retry_guard(root, now):
+    if browser_retry_stops(root, now):
+        raise ValueError("retry_browser_stopped: explicit retry-resume evidence required")
+
+
+def persist_record(root, record):
+    # Leave a durable recovery marker even if interrupted between record,
+    # index and exports. The CLI holds its writer lock for the whole operation.
+    atomic_json(root / EXPORT_STATE_PATH, {"schema_version": 1, "dirty": True, "status": "pending"})
+    atomic_json(root / "applications/records" / slug(record["application_id"]) / "record.json", record)
+    seen_index.update(root, record, canonical_url)
+
+
+def save_retry_record(root, record, result, deferred=False):
+    persist_record(root, record)
+    return finish_mutation(root, result, deferred)
+
+
+def retry_status(root, application_id, now):
+    record = read(root / "applications/records" / slug(application_id) / "record.json")
+    return {"application_id": application_id, **retry_policy.check_retry(record, now, MAX_RETRIES).as_dict(),
+            "blocker_id": (record.get("blocker") or {}).get("id"),
+            "retry_counts": record.get("retry_counts", {}),
+            "retry_budget": min(MAX_RETRIES, record.get("retry_budget", MAX_RETRIES)),
+            "blocked_on_answer_ids": record.get("blocked_on_answer_ids", []),
+            "browser_stops": browser_retry_stops(root, now)}
+
+
+def retry_failure(root, application_id, reason, now, deferred=False, *, event_details=None):
+    try:
+        reason = retry_policy.Reason(reason)
+    except (ValueError, TypeError):
+        raise ValueError("Unknown retry reason; use a Reason code") from None
+    path = root / "applications/records" / slug(application_id) / "record.json"
+    record = read(path)
+    if "browser_stop" in record:
+        validate_browser_incident(record["browser_stop"], now)
+    updated = retry_policy.next_retry_state(preserve_browser_incident(record), reason, now, MAX_RETRIES)
+    confirmed = retry_policy.check_retry(updated, now, MAX_RETRIES).decision == retry_policy.Decision.CONFIRMED
+    if confirmed and reason not in {retry_policy.Reason.LOGIN, retry_policy.Reason.PAGE_CHANGED,
+                                    retry_policy.Reason.ACCOUNT_SAFETY, retry_policy.Reason.MANUAL_STOP}:
+        return finish_mutation(root, {"application_id": application_id, "decision": "confirmed",
+                                      "already_recorded": True}, deferred, repeated=True)
+    if reason in {retry_policy.Reason.ACCOUNT_SAFETY, retry_policy.Reason.MANUAL_STOP}:
+        # Existing safety owns these stops and its screenshot/resume workflow.
+        # Persist application state first, even if safety then demands evidence.
+        try:
+            result = save_retry_record(root, updated, {"application_id": application_id}, deferred)
+        finally:
+            safety.stop_run(root, record.get("run_id") or "local", reason.value, now)
+        return {**result, "decision": "stopped"}
+    if reason in {retry_policy.Reason.LOGIN, retry_policy.Reason.PAGE_CHANGED}:
+        current = updated.get("browser_stop") or record.get("blocker")
+        if not current or current.get("reason") not in {"login", "page_changed"} or current.get("resume") is not None:
+            blocker = updated["blocker"]
+            if (blocker and blocker["reason"] == reason.value and blocker["resume"] is None
+                    and blocker != record.get("blocker")):
+                current = json.loads(json.dumps(blocker))
+            else:
+                # A login can be observed while submission is uncertain. It
+                # stops the session without weakening the uncertainty blocker.
+                current = {"id": "browser-" + uuid4().hex,
+                           "reason": reason.value, "blocked_at": now.isoformat(), "answer_ids": [], "resume": None}
+        updated["browser_stop"] = json.loads(json.dumps(current))
+    decision = retry_policy.check_retry(updated, now, MAX_RETRIES)
+    if updated == record:
+        return finish_mutation(root, {"application_id": application_id, **decision.as_dict(),
+                                      "already_recorded": True}, deferred, repeated=True)
+    status = (record["status"] if confirmed else
+              "submission_uncertain" if decision.decision == retry_policy.Decision.RECONCILIATION_REQUIRED else
+              "awaiting_answer" if updated.get("blocked_on_answer_ids") else "failed")
+    updated.update(status=status, status_updated_at=now.isoformat())
+    updated["events"].append({"at": now.isoformat(), **(event_details or {}), "status": status, "reason": reason.value,
+                              "retry_blocker_id": (updated.get("blocker") or {}).get("id")})
+    return save_retry_record(root, updated, {"application_id": application_id, **decision.as_dict(),
+                                           "blocker_id": (updated.get("browser_stop") or updated.get("blocker") or {}).get("id")}, deferred)
+
+
+def retry_resume(root, application_id, blocker_id, evidence_path, now, deferred=False):
+    directory = root / "applications/records" / slug(application_id)
+    record = read(directory / "record.json")
+    decision = retry_policy.check_retry(record, now, MAX_RETRIES)
+    incident = record.get("browser_stop", record.get("blocker"))
+    if (not isinstance(incident, dict) or incident.get("id") != blocker_id or incident.get("reason") not in {"login", "page_changed"}
+            or incident.get("resume") is not None):
+        raise ValueError("Resume requires the exact current browser blocker incident")
+    validate_browser_incident(incident, now)
+    if now < timestamp(incident["blocked_at"]):
+        raise ValueError("Resume evidence predates the blocker")
+    content = Path(evidence_path).read_bytes()
+    if not content.strip():
+        raise ValueError("Resume requires nonempty saved evidence")
+    sha = hashlib.sha256(content).hexdigest()
+    evidence_id = "evidence-" + sha
+    # Save immutable bytes before linking them from either incident. run.json
+    # remains the original settings snapshot throughout the stop and resume.
+    target = directory / "retry-evidence" / (evidence_id + ".bin")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        if target.read_bytes() != content:
+            raise ValueError("Saved resume evidence was modified")
+    else:
+        fd, temporary = tempfile.mkstemp(prefix=".evidence-", dir=target.parent)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(content)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, target)
+            directory_fd = os.open(target.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+    if decision.decision == retry_policy.Decision.RESUME_REQUIRED and (record.get("blocker") or {}).get("id") == blocker_id:
+        record = retry_policy.resume_retry(record, blocker_id, evidence_id, now, MAX_RETRIES)
+    # Clearing a session incident after confirmation/uncertainty/exhaustion
+    # permits independent jobs only. The application's retry gate still denies
+    # work, and neither its budget nor its uncertainty blocker is removed.
+    record["browser_stop"] = {**incident, "resume": {"evidence_id": evidence_id, "at": now.isoformat()}}
+    evidence = {"path": str(target.relative_to(root)), "sha256": sha}
+    record["events"].append({"at": now.isoformat(), "status": record["status"], "reason": "browser_resumed",
+                              "retry_blocker_id": blocker_id, "evidence": evidence})
+    return save_retry_record(root, record, {"application_id": application_id, "blocker_id": blocker_id,
+                                           "browser_resumed": True,
+                                           "decision": retry_policy.check_retry(record, now, MAX_RETRIES).decision}, deferred)
 
 
 def check_scope(root, record, url, now):
@@ -255,18 +467,23 @@ def check_scope(root, record, url, now):
         policies.append(settings.load_run(root, record["run_id"])["settings"])
     if all(scope_guard.allowed(url, policy) for policy in policies):
         return {"allowed": True}
+    updated = retry_policy.next_retry_state(record, "off_scope", now, MAX_RETRIES)
+    record.update(updated)
     record.update(stop_reason="off_scope", off_scope_url=url, status_updated_at=now.isoformat())
     if not record.get("submissions") and record["status"] != "submission_uncertain":
         record["status"] = "failed"
     record["events"].append({"at": now.isoformat(), "status": record["status"], "reason": "off_scope"})
-    atomic_json(root / "applications/records" / slug(record["application_id"]) / "record.json", record)
-    seen_index.update(root, record, canonical_url)
+    persist_record(root, record)
     finish_mutation(root, {"application_id": record["application_id"], "reason": "off_scope"})
     raise ValueError("off_scope: application destination is outside the run allowlist")
 
 
 def preflight(root, record, now):
     work_guard(root, record.get("run_id"), now, "preflight")
+    if record.get("application_id"):
+        # A stale in-memory ready snapshot must not bypass a newer durable wait.
+        retry_guard(read(root / "applications/records" / slug(record["application_id"]) / "record.json"), now)
+    retry_guard(record, now)
     if record["status"] != "ready":
         raise ValueError("Only a ready application may pass submission preflight")
     prepared = record.get("prepared")
@@ -323,10 +540,10 @@ def begin_submit(root, application_id, observed_url, session_id, now, deferred=F
         json.dump(claim, stream, sort_keys=True)
         stream.flush()
         os.fsync(stream.fileno())
+    record = retry_policy.next_retry_state(record, "submission_uncertain", now, MAX_RETRIES)
     record.update(status="submission_uncertain", status_updated_at=now.isoformat(), submission_intent=claim)
     record["events"].append({"at": now.isoformat(), "status": "submission_uncertain", "reason": "submit_intent", "attempt_id": attempt_id})
-    atomic_json(record_path, record)
-    seen_index.update(root, record, canonical_url)
+    persist_record(root, record)
     return finish_mutation(root, {"application_id": application_id, "attempt_id": attempt_id, "click_authorized": True,
             "on_interruption": "submission_uncertain; reconcile with evidence before retry"}, deferred)
 
@@ -343,11 +560,11 @@ def recover_submit(root, now):
         path.unlink()
         return {"recovered": True, "application_id": claim["application_id"], "requires_reconciliation": False}
     else:
+        record = retry_policy.next_retry_state(preserve_browser_incident(record), "submission_uncertain", now, MAX_RETRIES)
         record.update(status="submission_uncertain", status_updated_at=now.isoformat(), submission_intent=claim)
         if not any(e.get("attempt_id") == claim["attempt_id"] for e in record["events"]):
             record["events"].append({"at": now.isoformat(), "status": "submission_uncertain", "reason": "recovered_intent", "attempt_id": claim["attempt_id"]})
-        atomic_json(record_path, record)
-        seen_index.update(root, record, canonical_url)
+        persist_record(root, record)
     return {"recovered": True, "application_id": claim["application_id"], "requires_reconciliation": True}
 
 
@@ -397,16 +614,18 @@ def prepare_answers(root, application_id, questions, now, deferred=False):
     path = root / "applications/records" / slug(application_id) / "record.json"
     record = read(path)
     work_guard(root, record.get("run_id"), now, "prepare-answers")
+    retry_guard(record, now)
     if record.get("submissions") or record["status"] in {"submitted", "submission_uncertain"}:
         raise ValueError("Cannot prepare answers for a confirmed or uncertain submission")
     prepared = answer_core.prepare_answers(root, record, questions, now)
+    if not prepared["ready"]:
+        record = retry_policy.next_retry_state(record, "unknown_answer", now, MAX_RETRIES,
+                                               blocked_answer_ids=prepared["blocked_on_answer_ids"])
     record.update(status=prepared["status"], status_updated_at=now.isoformat(),
                   blocked_on_answer_ids=prepared["blocked_on_answer_ids"],
                   answer_preparation={k: prepared[k] for k in ("answers_path", "snapshot_version", "bank_version")})
     record["events"].append({"at": now.isoformat(), "status": prepared["status"], "reason": "unknown_answer" if not prepared["ready"] else "answers_prepared"})
-    atomic_json(path, record)
-    seen_index.update(root, record, canonical_url)
-    return finish_mutation(root, prepared, deferred)
+    return save_retry_record(root, record, prepared, deferred)
 
 
 def requeue_answers(root, now):
@@ -419,13 +638,34 @@ def requeue_answers(root, now):
     def eligible(root, record, now):
         return settings.eligibility(record, settings.load_settings(root)) is None
     result = answer_core.requeue(root, now, resume_check=resume_check, eligibility_check=eligible)
-    for update in result["updates"]:
+    runnable, waiting = [], []
+    for update in result["updates"] + result["waiting"]:
         path = root / "applications/records" / update["application_id"] / "record.json"
         record = read(path)
-        record.update(update, status_updated_at=now.isoformat(), resumed_from_answers=True)
-        record["events"].append({"at": now.isoformat(), "status": "preparing", "reason": "answers_resolved"})
-        atomic_json(path, record)
-        seen_index.update(root, record, canonical_url)
+        # The resolver retains missing/unrepresented IDs and returns actual
+        # unresolved IDs. Only its confirmed difference may release a blocker.
+        resolved = set(record.get("blocked_on_answer_ids", [])) - set(update["blocked_on_answer_ids"])
+        updated = retry_policy.resolve_answer_blocker(record, resolved, now, MAX_RETRIES)
+        if update["blocked_on_answer_ids"]:
+            updated = retry_policy.next_retry_state(updated, "unknown_answer", now, MAX_RETRIES,
+                                                     blocked_answer_ids=update["blocked_on_answer_ids"])
+        decision = retry_policy.check_retry(updated, now, MAX_RETRIES)
+        reasons = list(update.get("reasons", []))
+        if decision.decision != retry_policy.Decision.ELIGIBLE:
+            reasons.append("retry_" + decision.decision.value)
+        if browser_retry_stops(root, now):
+            reasons.append("browser_stopped")
+        if reasons:
+            waiting.append({**update, "status": "awaiting_answer", "reasons": reasons})
+        else:
+            runnable.append(update)
+            updated.update(status="preparing", resumed_from_answers=True)
+        if updated != record:
+            updated["status_updated_at"] = now.isoformat()
+            updated["events"].append({"at": now.isoformat(), "status": updated["status"], "reason": "answers_resolved",
+                                       "resolved_answer_ids": sorted(resolved)})
+            persist_record(root, updated)
+    result.update(updates=runnable, runnable_ids=[u["application_id"] for u in runnable], waiting=waiting)
     return result
 
 
@@ -433,6 +673,7 @@ def review_form(root, application_id, visible, now, deferred=False):
     path = root / "applications/records" / slug(application_id) / "record.json"
     record = read(path)
     work_guard(root, record.get("run_id"), now, "review-form")
+    retry_guard(record, now)
     if record["status"] != "ready" or record.get("submission_intent") or record.get("submissions"):
         raise ValueError("Form review requires one ready, unsubmitted attempt")
     prepared = record["prepared"]
@@ -451,7 +692,7 @@ def review_form(root, application_id, visible, now, deferred=False):
     elif not verdict["passed"]:
         record["stop_reason"] = "review_mismatch"
     record["events"].append({"at": now.isoformat(), "status": "ready", "reason": "review_passed" if verdict["passed"] else "review_mismatch"})
-    atomic_json(path, record)
+    persist_record(root, record)
     return finish_mutation(root, {"application_id": application_id, "passed": verdict["passed"],
                                 "stop_reason": verdict["stop_reason"], "review_snapshot": prepared["review_snapshot"],
                                 "difference_codes": [d["code"] for d in verdict["differences"]]}, deferred)
@@ -483,19 +724,36 @@ def event(root, args, now, deferred=False):
             return finish_mutation(root, {"application_id": args.id, "status": record["status"], "already_recorded": True}, deferred, repeated=True)
         updated["events"].append(details)
         updated.update(status=updated["outcome"], status_updated_at=now.isoformat())
-        atomic_json(directory / "record.json", updated)
-        seen_index.update(root, updated, canonical_url)
+        persist_record(root, updated)
         return finish_mutation(root, {"application_id": args.id, "status": updated["status"]}, deferred)
     if status in {"preparing", "ready"}:
         work_guard(root, record.get("run_id"), now, "event")
+        if status == "preparing" and retry_policy.check_retry(record, now, MAX_RETRIES).decision == retry_policy.Decision.WAITING_ANSWER:
+            return finish_mutation(root, {"application_id": args.id, "status": record["status"],
+                                          "decision": "waiting_answer", "already_recorded": True}, deferred, repeated=True)
+        retry_guard(record, now)
+    uncertain = (record["status"] == "submission_uncertain" or record.get("submission_intent") is not None
+                 or record.get("stop_reason") == "submission_uncertain"
+                 or (record.get("blocker") or {}).get("reason") == "submission_uncertain")
+    reconciling = uncertain and status in {"failed", "withdrawn"}
+    submission_observation = (status in {"submitted", "submission_uncertain"} and record.get("prepared")
+                              and not (record.get("submissions") or record.get("submitted_at")))
     if status not in STATUSES or status == "discovered":
         raise ValueError("Invalid event status")
-    if status == record["status"]:
+    if status == record["status"] and not reconciling:
         return finish_mutation(root, {"application_id": args.id, "status": status, "already_recorded": True}, deferred, repeated=True)
-    if status not in TRANSITIONS.get(record["status"], set()):
+    if status == "submitted" and (record.get("submissions") or record.get("submitted_at")):
+        return finish_mutation(root, {"application_id": args.id, "status": record["status"], "already_recorded": True}, deferred, repeated=True)
+    if (status not in TRANSITIONS.get(record["status"], set()) and not submission_observation
+            and not (uncertain and status in {"submitted", "failed", "withdrawn"})):
         raise ValueError(f"Invalid transition {record['status']} -> {status}; reconcile before retrying")
-    if record["status"] == "submission_uncertain" and status != "submitted" and (not args.evidence or not args.note):
+    if reconciling and (not args.evidence or not args.note or not args.note.strip()):
         raise ValueError("Resolving uncertainty without submission requires reconciliation evidence and a note")
+    if reconciling and not args.evidence.read_bytes().strip():
+        raise ValueError("Resolving uncertainty requires nonempty saved evidence")
+    if status == "failed" and not reconciling:
+        return retry_failure(root, args.id, getattr(args, "reason", None) or "unsupported", now, deferred,
+                             event_details=details)
     if status == "ready":
         if not args.resume_scope or not args.answers:
             raise ValueError("Ready requires --resume-scope and an exact questions/answers JSON file")
@@ -536,27 +794,36 @@ def event(root, args, now, deferred=False):
                 preflight(root, {**record, "status": "ready", "submission_intent": None}, now)
             except (ValueError, OSError) as exc:
                 details["recording_warning"] = str(exc)
+            # Guard recovery may have durably recorded a crashed claim. Keep
+            # that incident and its counters when logging the late confirmation.
+            record = read(directory / "record.json")
             evidence = directory / ("confirmation-" + now.strftime("%Y%m%dT%H%M%S%f") + args.evidence.suffix)
             shutil.copy2(args.evidence, evidence)
             details.update(confirmation_path=str(evidence.relative_to(root)), confirmation_sha256=digest(evidence))
             record["submissions"].append({**prepared, "submitted_at": occurred.isoformat(), **details})
             record["submitted_at"] = occurred.isoformat()
-    if record["status"] == "submission_uncertain" and status != "submitted":
+    if reconciling:
         evidence = directory / ("reconciliation-" + now.strftime("%Y%m%dT%H%M%S%f") + args.evidence.suffix)
         shutil.copy2(args.evidence, evidence)
         details.update(reconciliation_path=str(evidence.relative_to(root)), reconciliation_sha256=digest(evidence))
+    if status == "submission_uncertain":
+        record = retry_policy.next_retry_state(preserve_browser_incident(record), "submission_uncertain", now, MAX_RETRIES)
+    if details.get("confirmation_path") or details.get("reconciliation_path"):
+        # Clear uncertainty only in this evidence-backed reconciliation path.
+        # Counts, budget and independent browser incidents remain untouched.
+        if (record.get("blocker") or {}).get("reason") == "submission_uncertain":
+            details["reconciled_retry_blocker"] = record["blocker"]
+            record.update(blocker=None, next_eligible_at=None)
+        if record.get("stop_reason") == "submission_uncertain":
+            record["stop_reason"] = None
+        record.pop("submission_intent", None)
     record["events"].append(details)
     record.update(status=status, status_updated_at=now.isoformat())
-    atomic_json(directory / "record.json", record)
-    seen_index.update(root, record, canonical_url)
+    persist_record(root, record)
     if details.get("confirmation_path") or details.get("reconciliation_path"):
         claim_path = root / "applications/browser-claim.json"
         if claim_path.exists() and read(claim_path).get("application_id") == args.id:
             claim_path.unlink()
-        # Intent remains in history; a reconciled failure may be prepared afresh.
-        if record.get("submission_intent"):
-            record.pop("submission_intent")
-            atomic_json(directory / "record.json", record)
     return finish_mutation(root, {"application_id": args.id, "status": status}, deferred)
 
 
@@ -637,6 +904,8 @@ def main():
     update.add_argument("--id", required=True)
     update.add_argument("--status", choices=sorted(STATUSES - {"discovered"}), required=True)
     update.add_argument("--note", default="")
+    update.add_argument("--reason", choices=[r.value for r in retry_policy.Reason],
+                        help="Typed failure reason; unclassified failed events stop as unsupported")
     update.add_argument("--resume-scope")
     update.add_argument("--answers", type=Path)
     update.add_argument("--evidence", type=Path)
@@ -647,6 +916,18 @@ def main():
     update.add_argument("--category")
     check = commands.add_parser("preflight")
     check.add_argument("--id", required=True)
+    failure = commands.add_parser("retry-failure", help="Record one observed typed failure; never run a retry loop")
+    failure.add_argument("--id", required=True)
+    failure.add_argument("--reason", choices=[r.value for r in retry_policy.Reason], required=True)
+    retry_check = commands.add_parser("retry-status", help="Read durable retry eligibility and session browser stops")
+    retry_check.add_argument("--id", required=True)
+    retry_continue = commands.add_parser("retry-resume", help="Explicitly resume the exact login/page-change incident")
+    retry_continue.add_argument("--id", required=True)
+    retry_continue.add_argument("--blocker-id", required=True)
+    retry_continue.add_argument("--evidence", type=Path, required=True)
+    browser_check = commands.add_parser("browser-guard", help="Require this gate immediately before each browser action")
+    browser_check.add_argument("--run-id")
+    browser_check.add_argument("--id", help="Also require this application's retry eligibility")
     commands.add_parser("export")
     commands.add_parser("reindex")
     run = commands.add_parser("run-start")
@@ -756,6 +1037,17 @@ def main():
                 result = event(root, args, now, args.defer_export)
             elif args.command == "preflight":
                 result = preflight(root, read(root / "applications/records" / slug(args.id) / "record.json"), now)
+            elif args.command == "retry-failure":
+                result = retry_failure(root, args.id, args.reason, now, args.defer_export)
+            elif args.command == "retry-status":
+                result = retry_status(root, args.id, now)
+            elif args.command == "retry-resume":
+                result = retry_resume(root, args.id, args.blocker_id, args.evidence, now, args.defer_export)
+            elif args.command == "browser-guard":
+                work_guard(root, args.run_id, now, "browser-guard")
+                if args.id:
+                    retry_guard(read(root / "applications/records" / slug(args.id) / "record.json"), now)
+                result = {"browser_allowed": True}
             elif args.command == "reindex":
                 result = seen_index.reindex(root, records(root), canonical_url)
             elif args.command == "run-start":
@@ -807,6 +1099,7 @@ def main():
             elif args.command == "scope-check":
                 record = read(root / "applications/records" / slug(args.id) / "record.json")
                 work_guard(root, record.get("run_id"), now, "scope-check")
+                retry_guard(record, now)
                 result = check_scope(root, record, args.url, now)
             elif args.command == "run-summary":
                 result = cleanup.run_summary(root, args.run_id, now)
@@ -814,6 +1107,7 @@ def main():
                 result = cleanup.cleanup_run(root, args.run_id, now, execute=args.execute, export_callback=lambda: recover(root, export_csv))
             elif args.command == "register-tab":
                 work_guard(root, args.run_id, now, "register-tab")
+                retry_guard(read(root / "applications/records" / slug(args.id) / "record.json"), now)
                 result = cleanup.register_tab(root, args.run_id, args.window_id, args.tab_id, args.url, args.id, now)
             elif args.command == "batch-progress":
                 result = batches.batch_progress(records(root), args.batch_id, args.target, read(args.categories) if args.categories else None)

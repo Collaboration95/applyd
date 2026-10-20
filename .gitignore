@@ -161,3 +161,9 @@ __pycache__/
 /docs/img/*
 !/docs/img/demo-dashboard.png
 !/docs/img/demo-run.gif
+
+# Generic durable retries and synthetic incident-bound recovery checks.
+!/scripts/retry_policy.py
+!/docs/retries.md
+!/tests/test_retry_policy.py
+!/tests/test_retry_integration.py

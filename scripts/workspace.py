@@ -35,6 +35,7 @@ import cleanup
 import outcomes
 import batches
 import reviewer
+import reports
 import computer_fallback
 import retry_policy
 import eligibility
@@ -1022,6 +1023,7 @@ def main():
     browser_check.add_argument("--id", help="Also require this application's retry eligibility")
     commands.add_parser("export")
     commands.add_parser("reindex")
+    commands.add_parser("metrics", help="Print measured aggregate effort without source identifiers")
     run = commands.add_parser("run-start")
     run.add_argument("--id", required=True)
     screen = commands.add_parser("screen", help="Check a result-card header before extraction or navigation")
@@ -1109,6 +1111,10 @@ def main():
     outreach_sent.add_argument("--follow-up-id", required=True)
     outreach_sent.add_argument("--at", required=True)
     outreach_sent.add_argument("--evidence", type=Path, required=True)
+    report = commands.add_parser("report", help="Print a deterministic weekly report from local records")
+    report.add_argument("--week", nargs="?", default="current", const="current", help="ISO week or Monday date; default current week")
+    report.add_argument("--shareable", action="store_true", help="Remove private labels and blocker IDs")
+    report.add_argument("--json", action="store_true")
     args = parser.parse_args()
     root = select_root(args.workspace)
     try:
@@ -1270,11 +1276,23 @@ def main():
             elif args.command == "outreach-confirm-send":
                 from outreach_workspace import confirm_manual_send
                 result = confirm_manual_send(root, args.id, args.follow_up_id, occurred_at=args.at, recorded_at=now, evidence=args.evidence, deferred=args.defer_export)
+            elif args.command == "metrics":
+                from metrics import load_events, summarize
+                result = summarize(records(root), load_events(root))
+            elif args.command == "report":
+                week = now.date().isoformat() if args.week == "current" else args.week
+                if args.week == "current":
+                    week = (now.date() - timedelta(days=now.weekday())).isoformat()
+                from metrics import load_events
+                result = reports.weekly_report(records(root), week, now=now, timezone=policy["timezone"], shareable=args.shareable, metrics=load_events(root))
             elif args.command == "review-form":
                 result = review_form(root, args.id, read(args.visible), now, args.defer_export)
             else:
                 result = {"export": recover(root, export_csv)}
-        print(json.dumps(result, indent=2, ensure_ascii=False))
+        if args.command == "report" and not args.json:
+            print(reports.format_report(result))
+        else:
+            print(json.dumps(result, indent=2, ensure_ascii=False))
         if args.command == "outreach" and result["status"] in {"blocked", "draft_uncertain"}:
             parser.exit(2)
         if args.command == "computer-use" and result["outcome"] != "completed":

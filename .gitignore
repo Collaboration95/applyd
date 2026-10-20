@@ -219,3 +219,12 @@ __pycache__/
 !/docs/forms.md
 !/tests/forms.test.cjs
 !/tests/fixtures/application-form.html
+
+# Generic measured telemetry, deterministic reports and synthetic CLI fixtures.
+!/scripts/metrics.py
+!/scripts/reports.py
+!/docs/metrics.md
+!/docs/reports.md
+!/tests/test_metrics.py
+!/tests/test_reports.py
+!/tests/test_reports_cli.py

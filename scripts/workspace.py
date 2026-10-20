@@ -21,6 +21,7 @@ from xml.etree import ElementTree
 
 from resolve_resume import ROOT, check_selection, current_projects, latest_release, project_fingerprint, resolve, timestamp
 from export_dashboard import export_dashboard
+from workspace_config import select_root
 
 STATUSES = {"discovered", "preparing", "awaiting_answer", "ready", "submitted",
             "submission_uncertain", "failed", "skipped", "rejected", "interview", "withdrawn"}
@@ -348,6 +349,7 @@ def export_csv(root):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--workspace", type=Path, help="Private data root (overrides APPLYD_WORKSPACE)")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("status")
     projects = commands.add_parser("projects")
@@ -380,30 +382,31 @@ def main():
     check.add_argument("--id", required=True)
     commands.add_parser("export")
     args = parser.parse_args()
+    root = select_root(args.workspace)
     now = datetime.now(timezone.utc).astimezone()
     try:
-        with writer(ROOT):
+        with writer(root):
             if args.command == "status":
-                registry = read(ROOT / "resumes/registry.json")
+                registry = read(root / "resumes/registry.json")
                 scopes = sorted({r["scope"] for r in registry["releases"]})
-                result = {"resumes": [], "projects": len(current_projects(ROOT)), "application_records": len(records(ROOT))}
+                result = {"resumes": [], "projects": len(current_projects(root)), "application_records": len(records(root))}
                 for scope in scopes:
                     try:
                         candidate = latest_release(registry, scope, now)
-                        result["resumes"].append(resolve(registry, scope, candidate["purpose"], now, ROOT))
+                        result["resumes"].append(resolve(registry, scope, candidate["purpose"], now, root))
                     except ValueError as exc:
                         result["resumes"].append({"scope": scope, "blocked": str(exc)})
-                result["unanswered"] = [a["id"] for a in read(ROOT / "profile/answers.json")["answers"] if a["value"] is None]
+                result["unanswered"] = [a["id"] for a in read(root / "profile/answers.json")["answers"] if a["value"] is None]
             elif args.command == "projects":
-                items = current_projects(ROOT).values()
+                items = current_projects(root).values()
                 result = [([b["text"] for b in p["bullets"]] if args.bullets_only else p) if args.id else {"id": p["id"], "updated_at": p["updated_at"], "tags": p["tags"], "active": p.get("active", True)}
                           for p in items if (not args.id or p["id"] == args.id) and (not args.tag or args.tag in p["tags"])]
                 if args.id and args.bullets_only:
                     result = result[0] if result else []
             elif args.command == "draft":
-                result = draft(ROOT, args.preset, now)
+                result = draft(root, args.preset, now)
             elif args.command == "answer":
-                matches = [a for a in read(ROOT / "profile/answers.json")["answers"] if a["id"] == args.id]
+                matches = [a for a in read(root / "profile/answers.json")["answers"] if a["id"] == args.id]
                 if len(matches) != 1:
                     raise ValueError("Answer ID is missing or ambiguous")
                 result = matches[0]
@@ -412,15 +415,15 @@ def main():
                 if any(result.get(k) and now >= timestamp(result[k]) for k in ("review_due_at", "valid_until")):
                     raise ValueError("Answer is overdue or expired; queue this question")
             elif args.command == "release":
-                result = release(ROOT, args, now)
+                result = release(root, args, now)
             elif args.command == "capture":
-                result = capture(ROOT, read(args.file), now)
+                result = capture(root, read(args.file), now)
             elif args.command == "event":
-                result = event(ROOT, args, now)
+                result = event(root, args, now)
             elif args.command == "preflight":
-                result = preflight(ROOT, read(ROOT / "applications/records" / slug(args.id) / "record.json"), now)
+                result = preflight(root, read(root / "applications/records" / slug(args.id) / "record.json"), now)
             else:
-                result = export_csv(ROOT)
+                result = export_csv(root)
         print(json.dumps(result, indent=2, ensure_ascii=False))
     except (ValueError, KeyError, OSError, TypeError, subprocess.CalledProcessError, zipfile.BadZipFile) as exc:
         parser.exit(1, f"ERROR: {exc}\n")

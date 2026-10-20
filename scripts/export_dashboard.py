@@ -2,11 +2,13 @@
 """Export application records for the static, double-clickable run log."""
 
 import json
+import argparse
 import os
 import tempfile
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
+from workspace_config import select_root
 
 ROOT = Path(__file__).resolve().parents[1]
 SGT = ZoneInfo("Asia/Singapore")
@@ -73,4 +75,6 @@ def export_dashboard(root=ROOT):
 
 
 if __name__ == "__main__":
-    print(json.dumps(export_dashboard(), indent=2))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--workspace", type=Path)
+    print(json.dumps(export_dashboard(select_root(parser.parse_args().workspace)), indent=2))

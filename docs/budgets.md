@@ -78,29 +78,21 @@ Only evidence-backed reconciliation can prove non-execution, without refunding
 the consumed action or retry count. If the deadline expires during Submit
 authorization, the runner refuses the click and retains uncertainty for review.
 
-## Parent retry integration
+## Retry-policy integration
 
 `budgets.retry_limit(root, record)` is public, read-only and returns the minimum
 of current `work_budget.max_retries`, the record's verified frozen run policy
 (including `prepared.run_id`), and its saved `retry_budget`. It never increases
 an existing saved budget. A record without a run uses current/saved limits.
 
-The parent must import this helper in `workspace.py` and replace `MAX_RETRIES`
-arguments with `retry_limit(root, record)` for each record passed to
-`check_retry`, `next_retry_state`, `resume_retry` and `resolve_answer_blocker`.
-This includes failure recording, retry status/resume, uncertainty/recovery,
-answer preparation/requeue, events and browser-session record scans. Compute
-from the actual record before each transition and persist the full returned
-retry state, so the smaller budget survives future settings changes.
-
-Make the parent's `retry_guard(record, now, *, root=None)` backward compatible:
-when `root` is supplied, use the computed helper; otherwise retain its previous
-default. Pass `root=root` from parent call sites that know the workspace.
-`runner_workspace` currently invokes `retry_policy.check_retry` directly with
-the computed limit, so it does not depend on that signature change. It may use
-`w.retry_guard(saved, now, root=root)` once the parent adds it. Other settings
-loading, run snapshots and existing submission preflight must stay in place;
-budget validation is already integrated into `settings.py` and the example.
+`workspace.py` imports this helper through its `retry_limit` wrapper and passes
+the resulting limit to retry checks and state transitions, including failure,
+resume, answer-blocker and uncertainty paths. `retry_guard(record, now,
+root=None)` uses the configured helper when given a workspace root and retains
+the legacy `MAX_RETRIES` fallback for standalone callers without one.
+`runner_workspace.py` supplies the helper's result directly to
+`retry_policy.check_retry`; `runner.py` also intersects it with the frozen
+run's work-budget limit. Settings validation and run snapshots remain in place.
 
 Focused verification (synthetic fixtures and fake clocks only):
 

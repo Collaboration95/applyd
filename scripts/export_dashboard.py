@@ -69,6 +69,7 @@ def export_dashboard(root=ROOT, snapshot=None):
             "captured_at": record.get("captured_at"), "updated_at": record.get("status_updated_at"),
             "description": description.read_text() if description else "",
             "notes": record.get("notes", ""), "events": events, "submissions": submissions,
+            "contacts": record.get("contacts") or [],
             "outcome": record.get("outcome"), "latest_outcome_at": record.get("latest_outcome_at"),
             "follow_up_at": record.get("follow_up_at"),
             "prepared": {"at": prepared.get("prepared_at"), "resume": resume(prepared)} if prepared else None})

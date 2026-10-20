@@ -33,6 +33,8 @@ GENERIC_FILES = frozenset({
     "scripts/export_recovery.py", "docs/export-recovery.md",
     "scripts/outcomes.py", "scripts/batches.py", "docs/outcomes.md", "docs/batches.md",
     "scripts/reviewer.py", "docs/reviewer.md",
+    "scripts/demo.py", "scripts/demo_gif.py", "scripts/screenshots.sh", "docs/demo.md",
+    "demo/applications.json",
     # Audited generic artifacts in the open lean-workflow review branch.
     ".claude/skills/answer-questions/SKILL.md", ".claude/skills/cleanup-run/SKILL.md",
     "docs/batch.example.json", "docs/lean-workflows.md",
@@ -47,10 +49,11 @@ GENERIC_FILES = frozenset({
     "docs/brand/sprite.svg", "docs/brand/spritesheet.svg",
 })
 PNG_FILES = frozenset({
-    "docs/brand/banner.png", "docs/brand/social-preview.png",
+    "docs/brand/banner.png", "docs/brand/social-preview.png", "docs/img/demo-dashboard.png",
     "docs/brand/sprite-64.png", "docs/brand/sprite-128.png",
     "docs/brand/sprite-256.png", "docs/brand/spritesheet-512x128.png",
 })
+GIF_FILES = frozenset({"docs/img/demo-run.gif"})
 TEST_PATH = re.compile(r"tests/(?:test_[a-z0-9_]+\.py|[a-z0-9-]+\.test\.cjs)\Z")
 ISSUE_PATH = re.compile(r"roadmap/issues/[a-z0-9]+(?:-[a-z0-9]+)*\.md\Z")
 MAX_FILE = 16 * 1024 * 1024
@@ -80,7 +83,7 @@ def generic_path(name):
         return False
     if "/".join(parts) != name:
         return False
-    return bool(name in GENERIC_FILES or name in PNG_FILES or TEST_PATH.fullmatch(name) or ISSUE_PATH.fullmatch(name))
+    return bool(name in GENERIC_FILES or name in PNG_FILES or name in GIF_FILES or TEST_PATH.fullmatch(name) or ISSUE_PATH.fullmatch(name))
 
 
 def normalized(value):
@@ -135,6 +138,8 @@ class Scanner:
         self.text(data.decode("utf-8", errors="replace"))
         if name in PNG_FILES:
             self.png(data)
+        elif name in GIF_FILES:
+            self.gif(data)
         else:
             try:
                 data.decode("utf-8")
@@ -183,6 +188,52 @@ class Scanner:
             if not ended:
                 raise ValueError
         except (ValueError, IndexError, UnicodeError, zlib.error, GateError):
+            self.findings["unreviewable_content"] += 1
+
+    def gif(self, data):
+        """Validate GIF framing and scan all extension payloads; review pixels."""
+        try:
+            if data[:6] not in (b"GIF87a", b"GIF89a") or len(data) < 14:
+                raise ValueError
+            if not int.from_bytes(data[6:8], "little") or not int.from_bytes(data[8:10], "little"):
+                raise ValueError
+            pos = 13 + (3 * 2 ** ((data[10] & 7) + 1) if data[10] & 128 else 0)
+            frames = 0
+            def blocks(offset):
+                payload = bytearray()
+                while True:
+                    length = data[offset]
+                    offset += 1
+                    if not length:
+                        return offset, payload
+                    if offset + length > len(data):
+                        raise ValueError
+                    payload.extend(data[offset:offset + length])
+                    offset += length
+            while pos < len(data):
+                kind = data[pos]
+                pos += 1
+                if kind == 0x3b:
+                    if pos != len(data) or not frames:
+                        raise ValueError
+                    return
+                if kind == 0x21:
+                    pos += 1  # Extension label; every subblock is scanned together.
+                    pos, payload = blocks(pos)
+                    self.text(bytes(payload).decode("latin-1"))
+                elif kind == 0x2c:
+                    if pos + 9 > len(data):
+                        raise ValueError
+                    packed = data[pos + 8]
+                    pos += 9 + (3 * 2 ** ((packed & 7) + 1) if packed & 128 else 0)
+                    if data[pos] not in range(2, 9):
+                        raise ValueError
+                    pos, _ = blocks(pos + 1)
+                    frames += 1
+                else:
+                    raise ValueError
+            raise ValueError
+        except (ValueError, IndexError):
             self.findings["unreviewable_content"] += 1
 
     def report(self):

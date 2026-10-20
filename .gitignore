@@ -147,3 +147,17 @@ __pycache__/
 !/scripts/reviewer.py
 !/tests/test_reviewer.py
 !/docs/reviewer.md
+
+# Audited fictional demo input, generator and visually reviewed static captures.
+!/demo/
+/demo/*
+!/demo/applications.json
+!/scripts/demo.py
+!/scripts/demo_gif.py
+!/scripts/screenshots.sh
+!/tests/test_demo.py
+!/docs/demo.md
+!/docs/img/
+/docs/img/*
+!/docs/img/demo-dashboard.png
+!/docs/img/demo-run.gif

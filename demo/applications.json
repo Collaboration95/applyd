@@ -1,0 +1,398 @@
+{
+  "synthetic": true,
+  "timezone": "Asia/Singapore",
+  "applications": [
+    {
+      "id": "demo-app-01",
+      "company": "Cedar Systems",
+      "title": "Backend Engineer",
+      "location": "Singapore",
+      "status": "submitted",
+      "captured_at": "2026-10-18T09:02:00+08:00",
+      "updated_at": "2026-10-18T09:02:00+08:00",
+      "job_url": "",
+      "application_url": "",
+      "description": "Fictional Backend Engineer position at Cedar Systems. Synthetic demonstration record.",
+      "notes": "",
+      "events": [
+        {
+          "at": "2026-10-18T09:02:00+08:00",
+          "status": "submitted",
+          "note": "Outcome: Awaiting review."
+        }
+      ],
+      "submissions": [
+        {
+          "at": "2026-10-18T09:02:00+08:00",
+          "resume": {
+            "id": "demo-resume-01.pdf",
+            "url": ""
+          },
+          "applied_by": "Demo operator"
+        }
+      ]
+    },
+    {
+      "id": "demo-app-02",
+      "company": "Northstar Labs",
+      "title": "Data Analyst",
+      "location": "Singapore",
+      "status": "interview",
+      "captured_at": "2026-10-18T09:17:00+08:00",
+      "updated_at": "2026-10-18T09:17:00+08:00",
+      "job_url": "",
+      "application_url": "",
+      "description": "Fictional Data Analyst position at Northstar Labs. Synthetic demonstration record.",
+      "notes": "First-round interview scheduled.",
+      "events": [
+        {
+          "at": "2026-10-18T09:17:00+08:00",
+          "status": "interview",
+          "note": "Outcome: Interview. First-round interview scheduled."
+        }
+      ],
+      "submissions": [
+        {
+          "at": "2026-10-18T09:17:00+08:00",
+          "resume": {
+            "id": "demo-resume-02.pdf",
+            "url": ""
+          },
+          "applied_by": "Demo operator"
+        }
+      ],
+      "outcome": "interview",
+      "response": "interview",
+      "responded": true
+    },
+    {
+      "id": "demo-app-03",
+      "company": "Paper Kite Software",
+      "title": "Platform Engineer",
+      "location": "Singapore",
+      "status": "rejected",
+      "captured_at": "2026-10-18T09:35:00+08:00",
+      "updated_at": "2026-10-18T09:35:00+08:00",
+      "job_url": "",
+      "application_url": "",
+      "description": "Fictional Platform Engineer position at Paper Kite Software. Synthetic demonstration record.",
+      "notes": "",
+      "events": [
+        {
+          "at": "2026-10-18T09:35:00+08:00",
+          "status": "rejected",
+          "note": "Outcome: Declined after review."
+        }
+      ],
+      "submissions": [
+        {
+          "at": "2026-10-18T09:35:00+08:00",
+          "resume": {
+            "id": "demo-resume-03.pdf",
+            "url": ""
+          },
+          "applied_by": "Demo operator"
+        }
+      ],
+      "outcome": "rejected",
+      "response": "rejected",
+      "responded": true
+    },
+    {
+      "id": "demo-app-04",
+      "company": "Juniper Cloud",
+      "title": "Cloud Support Associate",
+      "location": "Singapore",
+      "status": "withdrawn",
+      "captured_at": "2026-10-18T10:01:00+08:00",
+      "updated_at": "2026-10-18T10:01:00+08:00",
+      "job_url": "",
+      "application_url": "",
+      "description": "Fictional Cloud Support Associate position at Juniper Cloud. Synthetic demonstration record.",
+      "notes": "Candidate withdrew after role scope changed.",
+      "events": [
+        {
+          "at": "2026-10-18T10:01:00+08:00",
+          "status": "withdrawn",
+          "note": "Outcome: Withdrawn. Candidate withdrew after role scope changed."
+        }
+      ],
+      "submissions": [
+        {
+          "at": "2026-10-18T10:01:00+08:00",
+          "resume": {
+            "id": "demo-resume-04.pdf",
+            "url": ""
+          },
+          "applied_by": "Demo operator"
+        }
+      ],
+      "outcome": "withdrawn",
+      "response": "withdrawn",
+      "responded": false
+    },
+    {
+      "id": "demo-app-05",
+      "company": "Blue Lantern Tech",
+      "title": "QA Engineer",
+      "location": "Singapore",
+      "status": "ready",
+      "captured_at": "2026-10-18T10:20:00+08:00",
+      "updated_at": "2026-10-18T10:20:00+08:00",
+      "job_url": "",
+      "application_url": "",
+      "description": "Fictional QA Engineer position at Blue Lantern Tech. Synthetic demonstration record.",
+      "notes": "Prepared; awaiting the next run step.",
+      "events": [
+        {
+          "at": "2026-10-18T10:20:00+08:00",
+          "status": "ready",
+          "note": "Prepared; awaiting the next run step."
+        }
+      ],
+      "submissions": []
+    },
+    {
+      "id": "demo-app-06",
+      "company": "Copper Finch",
+      "title": "Software Intern",
+      "location": "Singapore",
+      "status": "discovered",
+      "captured_at": "2026-10-18T13:10:00+08:00",
+      "updated_at": "2026-10-18T13:10:00+08:00",
+      "job_url": "",
+      "application_url": "",
+      "description": "Fictional Software Intern position at Copper Finch. Synthetic demonstration record.",
+      "notes": "Listing captured for review.",
+      "events": [
+        {
+          "at": "2026-10-18T13:10:00+08:00",
+          "status": "discovered",
+          "note": "Listing captured for review."
+        }
+      ],
+      "submissions": []
+    },
+    {
+      "id": "demo-app-07",
+      "company": "Mosaic Harbor",
+      "title": "AI Research Intern",
+      "location": "Singapore",
+      "status": "awaiting_answer",
+      "captured_at": "2026-10-18T13:23:00+08:00",
+      "updated_at": "2026-10-18T13:23:00+08:00",
+      "job_url": "",
+      "application_url": "",
+      "description": "Fictional AI Research Intern position at Mosaic Harbor. Synthetic demonstration record.",
+      "notes": "Stopped: unknown_answer. A required field needs a saved answer.",
+      "events": [
+        {
+          "at": "2026-10-18T13:23:00+08:00",
+          "status": "awaiting_answer",
+          "note": "Stopped: unknown_answer. A required field needs a saved answer."
+        }
+      ],
+      "submissions": [],
+      "stop_reason": "unknown_answer"
+    },
+    {
+      "id": "demo-app-08",
+      "company": "Quiet River Analytics",
+      "title": "Data Engineering Intern",
+      "location": "Singapore",
+      "status": "failed",
+      "captured_at": "2026-10-18T13:41:00+08:00",
+      "updated_at": "2026-10-18T13:41:00+08:00",
+      "job_url": "",
+      "application_url": "",
+      "description": "Fictional Data Engineering Intern position at Quiet River Analytics. Synthetic demonstration record.",
+      "notes": "Stopped: page_changed. No submission was attempted.",
+      "events": [
+        {
+          "at": "2026-10-18T13:41:00+08:00",
+          "status": "failed",
+          "note": "Stopped: page_changed. No submission was attempted."
+        }
+      ],
+      "submissions": [],
+      "stop_reason": "page_changed"
+    },
+    {
+      "id": "demo-app-09",
+      "company": "Amberline Digital",
+      "title": "Automation Intern",
+      "location": "Singapore",
+      "status": "skipped",
+      "captured_at": "2026-10-18T13:54:00+08:00",
+      "updated_at": "2026-10-18T13:54:00+08:00",
+      "job_url": "",
+      "application_url": "",
+      "description": "Fictional Automation Intern position at Amberline Digital. Synthetic demonstration record.",
+      "notes": "Stopped: eligibility_excluded. Role requirements did not match.",
+      "events": [
+        {
+          "at": "2026-10-18T13:54:00+08:00",
+          "status": "skipped",
+          "note": "Stopped: eligibility_excluded. Role requirements did not match."
+        }
+      ],
+      "submissions": [],
+      "stop_reason": "eligibility_excluded"
+    },
+    {
+      "id": "demo-app-10",
+      "company": "Orchid Stack",
+      "title": "Site Reliability Intern",
+      "location": "Singapore",
+      "status": "preparing",
+      "captured_at": "2026-10-18T14:15:00+08:00",
+      "updated_at": "2026-10-18T14:15:00+08:00",
+      "job_url": "",
+      "application_url": "",
+      "description": "Fictional Site Reliability Intern position at Orchid Stack. Synthetic demonstration record.",
+      "notes": "Preparation started; no submission yet.",
+      "events": [
+        {
+          "at": "2026-10-18T14:15:00+08:00",
+          "status": "preparing",
+          "note": "Preparation started; no submission yet."
+        }
+      ],
+      "submissions": []
+    },
+    {
+      "id": "demo-app-11",
+      "company": "Silver Fern Apps",
+      "title": "Junior Developer",
+      "location": "Singapore",
+      "status": "submission_uncertain",
+      "captured_at": "2026-10-19T09:04:00+08:00",
+      "updated_at": "2026-10-19T09:04:00+08:00",
+      "job_url": "",
+      "application_url": "",
+      "description": "Fictional Junior Developer position at Silver Fern Apps. Synthetic demonstration record.",
+      "notes": "Stopped: submission_uncertain. Reconcile before any retry.",
+      "events": [
+        {
+          "at": "2026-10-19T09:04:00+08:00",
+          "status": "submission_uncertain",
+          "note": "Stopped: submission_uncertain. Reconcile before any retry."
+        }
+      ],
+      "submissions": [],
+      "stop_reason": "submission_uncertain"
+    },
+    {
+      "id": "demo-app-12",
+      "company": "Tidal Works",
+      "title": "Product Data Intern",
+      "location": "Singapore",
+      "status": "submitted",
+      "captured_at": "2026-10-19T09:19:00+08:00",
+      "updated_at": "2026-10-19T09:19:00+08:00",
+      "job_url": "",
+      "application_url": "",
+      "description": "Fictional Product Data Intern position at Tidal Works. Synthetic demonstration record.",
+      "notes": "",
+      "events": [
+        {
+          "at": "2026-10-19T09:19:00+08:00",
+          "status": "submitted",
+          "note": "Outcome: Awaiting review."
+        }
+      ],
+      "submissions": [
+        {
+          "at": "2026-10-19T09:19:00+08:00",
+          "resume": {
+            "id": "demo-resume-12.pdf",
+            "url": ""
+          },
+          "applied_by": "Demo operator"
+        }
+      ]
+    },
+    {
+      "id": "demo-app-13",
+      "company": "Redwood Loop",
+      "title": "Frontend Engineer",
+      "location": "Singapore",
+      "status": "submitted",
+      "captured_at": "2026-10-19T09:39:00+08:00",
+      "updated_at": "2026-10-19T09:39:00+08:00",
+      "job_url": "",
+      "application_url": "",
+      "description": "Fictional Frontend Engineer position at Redwood Loop. Synthetic demonstration record.",
+      "notes": "",
+      "events": [
+        {
+          "at": "2026-10-19T09:39:00+08:00",
+          "status": "submitted",
+          "note": "Outcome: Awaiting review."
+        }
+      ],
+      "submissions": [
+        {
+          "at": "2026-10-19T09:39:00+08:00",
+          "resume": {
+            "id": "demo-resume-13.pdf",
+            "url": ""
+          },
+          "applied_by": "Demo operator"
+        }
+      ]
+    },
+    {
+      "id": "demo-app-14",
+      "company": "Cloudberry Studio",
+      "title": "Machine Learning Intern",
+      "location": "Singapore",
+      "status": "awaiting_answer",
+      "captured_at": "2026-10-19T12:12:00+08:00",
+      "updated_at": "2026-10-19T12:12:00+08:00",
+      "job_url": "",
+      "application_url": "",
+      "description": "Fictional Machine Learning Intern position at Cloudberry Studio. Synthetic demonstration record.",
+      "notes": "Stopped: login_required. Resume after the account is available.",
+      "events": [
+        {
+          "at": "2026-10-19T12:12:00+08:00",
+          "status": "awaiting_answer",
+          "note": "Stopped: login_required. Resume after the account is available."
+        }
+      ],
+      "submissions": [],
+      "stop_reason": "login_required"
+    },
+    {
+      "id": "demo-app-15",
+      "company": "Kestrel Metrics",
+      "title": "Software Engineer Intern",
+      "location": "Singapore",
+      "status": "submitted",
+      "captured_at": "2026-10-19T12:27:00+08:00",
+      "updated_at": "2026-10-19T12:27:00+08:00",
+      "job_url": "",
+      "application_url": "",
+      "description": "Fictional Software Engineer Intern position at Kestrel Metrics. Synthetic demonstration record.",
+      "notes": "",
+      "events": [
+        {
+          "at": "2026-10-19T12:27:00+08:00",
+          "status": "submitted",
+          "note": "Outcome: Application confirmed."
+        }
+      ],
+      "submissions": [
+        {
+          "at": "2026-10-19T12:27:00+08:00",
+          "resume": {
+            "id": "demo-resume-15.pdf",
+            "url": ""
+          },
+          "applied_by": "Demo operator"
+        }
+      ]
+    }
+  ]
+}

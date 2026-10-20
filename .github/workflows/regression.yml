@@ -1,0 +1,34 @@
+name: Synthetic regression
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+  pull-requests: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out public code with gh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APPLYD_PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh auth setup-git
+          gh repo clone "$GITHUB_REPOSITORY" "$RUNNER_TEMP/applyd-ci" -- --no-single-branch
+          cd "$RUNNER_TEMP/applyd-ci"
+          if [ -n "$APPLYD_PR_NUMBER" ]; then
+            gh pr checkout "$APPLYD_PR_NUMBER" --detach
+          else
+            git checkout --detach "$GITHUB_SHA"
+          fi
+      - name: Python behavior and end-to-end smoke
+        working-directory: ${{ runner.temp }}/applyd-ci
+        run: python3 -m unittest discover -s tests -v
+      - name: JavaScript behavior
+        working-directory: ${{ runner.temp }}/applyd-ci
+        run: node --test tests/*.test.cjs
+      - name: Publication and full-history audit
+        working-directory: ${{ runner.temp }}/applyd-ci
+        run: python3 scripts/check_publication.py

@@ -2,17 +2,40 @@
   "schema_version": 1,
   "mode": "apply",
   "easy_apply_only": false,
-  "external_hosts": {"allow": [], "deny": []},
+  "external_hosts": {
+    "allow": [],
+    "deny": []
+  },
   "daily_cap": null,
   "per_run_cap": null,
   "per_run_minutes": null,
   "company_blocklist": [],
   "title_blocklist": [],
   "max_required_years": null,
-  "retryable_statuses": ["failed", "awaiting_answer"],
+  "retryable_statuses": [
+    "failed",
+    "awaiting_answer"
+  ],
   "start_mode": "recommended",
   "timezone": "UTC",
   "browser": null,
   "resume_scope": null,
-  "role_rules": {}
+  "role_rules": {},
+  "follow_up_days": 14,
+  "computer_use": {
+    "enabled": false,
+    "step_budget": 6
+  },
+  "outreach": {
+    "enabled": false,
+    "business_days": 10,
+    "daily_draft_cap": 3,
+    "do_not_contact": []
+  },
+  "work_budget": {
+    "max_actions": 100,
+    "max_retries": 3,
+    "provider_token_cap": null,
+    "provider_cost_cap": null
+  }
 }

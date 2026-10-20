@@ -11,6 +11,8 @@ import re
 import tempfile
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from outreach import DEFAULT_POLICY, OutreachError, validate_policy
+import budgets
 
 
 DEFAULTS = {
@@ -30,7 +32,19 @@ DEFAULTS = {
     "browser": None,
     "resume_scope": None,
     "role_rules": {},
+    "follow_up_days": 14,
+    "computer_use": {"enabled": False, "step_budget": 6},
+    "outreach": copy.deepcopy(DEFAULT_POLICY),
+    "work_budget": copy.deepcopy(budgets.DEFAULT_POLICY),
 }
+# Required fields of the original immutable schema-1 run snapshot. New optional
+# policy fields must not invalidate old snapshots or change their saved hashes.
+FROZEN_V1_REQUIRED = frozenset({
+    "schema_version", "mode", "easy_apply_only", "external_hosts", "daily_cap",
+    "per_run_cap", "per_run_minutes", "company_blocklist", "title_blocklist",
+    "max_required_years", "retryable_statuses", "start_mode", "timezone",
+    "browser", "resume_scope", "role_rules",
+})
 _RETRYABLE = {"discovered", "preparing", "awaiting_answer", "ready", "failed",
               "skipped", "saved", "dry_run_complete", "needs_review"}
 
@@ -122,10 +136,31 @@ def _validate(raw):
         _invalid("mode", "apply, save_only or dry_run")
     if type(result["easy_apply_only"]) is not bool:
         _invalid("easy_apply_only", "a boolean")
-    for key in ("daily_cap", "per_run_cap", "per_run_minutes", "max_required_years"):
+    computer = result["computer_use"]
+    if not isinstance(computer, dict) or set(computer) - {"enabled", "step_budget"}:
+        _invalid("computer_use", "an object with enabled/step_budget only")
+    computer = {"enabled": False, "step_budget": 6, **computer}
+    if type(computer["enabled"]) is not bool:
+        _invalid("computer_use.enabled", "a boolean")
+    if type(computer["step_budget"]) is not int or computer["step_budget"] < 0:
+        _invalid("computer_use.step_budget", "a non-negative integer")
+    result["computer_use"] = computer
+    try:
+        result["work_budget"] = budgets.validate_policy(result["work_budget"])
+    except ValueError as exc:
+        raise SettingsError(f"settings.json: {exc}") from exc
+    if not isinstance(result["outreach"], dict):
+        _invalid("outreach", "an object with enabled/business_days/daily_draft_cap/do_not_contact only")
+    try:
+        result["outreach"] = validate_policy(result["outreach"])
+    except OutreachError as exc:
+        raise SettingsError(f"settings.json: {exc}") from exc
+    for key in ("daily_cap", "per_run_cap", "per_run_minutes", "max_required_years", "follow_up_days"):
         value = result[key]
         if value is not None and (type(value) is not int or value < 0):
             _invalid(key, "a non-negative integer or null (unlimited)")
+    if result["follow_up_days"] is None:
+        _invalid("follow_up_days", "a non-negative integer")
     hosts = result["external_hosts"]
     if not isinstance(hosts, dict) or set(hosts) - {"allow", "deny"}:
         _invalid("external_hosts", "an object with allow/deny arrays")
@@ -167,6 +202,11 @@ def _validate(raw):
     except (ValueError, TypeError) as exc:
         raise SettingsError("settings.json: values must be finite JSON data") from exc
     return result
+
+
+def validate_settings(raw):
+    """Validate a policy object and return an independent, default-filled copy."""
+    return _validate(raw)
 
 
 def load_settings(root):
@@ -249,8 +289,10 @@ def load_run(root, run_id):
         raise SettingsError("Invalid run.json schema; restore the original run snapshot")
     if type(record["schema_version"]) is not int or record["schema_version"] != 1 or record["run_id"] != run_id:
         raise SettingsError("Invalid run.json identity/schema")
-    settings = _validate(record["settings"])
-    if settings != record["settings"] or settings_hash(settings) != record["settings_hash"]:
+    saved = record["settings"]
+    settings = _validate(saved)
+    raw_hash = hashlib.sha256(json.dumps(saved, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode()).hexdigest()
+    if not FROZEN_V1_REQUIRED.issubset(saved) or raw_hash != record["settings_hash"]:
         raise SettingsError("Run settings snapshot/hash mismatch; restore the original run snapshot")
     start = _timestamp(record["started_at"], "run.started_at")
     expected = _deadline(start, settings)

@@ -148,6 +148,31 @@ test("Easy Apply includes exact current facts, multiline description and visible
   });
 });
 
+test("existing hiring_team shape becomes contacts at capture time without extra reads", () => {
+  for (const name of ["easy-card", "no-card", "external"]) {
+    const result = extractListing(fixture(name));
+    const normalized = spawnSync("python3", ["-B", "-c", [
+      "import json, sys",
+      "sys.path.insert(0, sys.argv[1])",
+      "from listing_input import validate_listing, normalize_listing_contacts",
+      'print(json.dumps(normalize_listing_contacts(validate_listing(json.load(sys.stdin)), "2026-10-20T12:30:00+08:00")))'
+    ].join("\n"), path.join(__dirname, "../scripts")], { input: JSON.stringify(result), encoding: "utf8" });
+    assert.equal(normalized.status, 0, normalized.stderr);
+    const saved = JSON.parse(normalized.stdout);
+    assert.deepEqual(saved.hiring_team, result.hiring_team);
+    assert.equal(saved.contacts.length, result.hiring_team ? 1 : 0);
+    if (result.hiring_team) {
+      const contact = saved.contacts[0];
+      for (const field of ["name", "headline", "profile_url"]) assert.equal(contact[field], result.hiring_team[field]);
+      assert.equal(contact.source, "linkedin_hiring_team");
+      assert.equal(contact.captured_at, "2026-10-20T12:30:00+08:00");
+      assert.equal(contact.relationship, "hiring_team");
+      assert.equal(contact.email, null);
+      assert.equal(contact.verified, false);
+    }
+  }
+});
+
 test("search details fallback ignores unrelated result and hidden poster/stale panel", () => {
   const result = extractListing(fixture("no-card"));
   assert.equal(result.platform_job_id, "900002");

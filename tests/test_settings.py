@@ -17,6 +17,19 @@ import settings as s
 
 
 class SettingsTests(unittest.TestCase):
+    def test_new_optional_defaults_preserve_original_frozen_settings_bytes(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root)
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        saved = s.run_start(self.root, "legacy-snapshot", now)
+        saved["settings"].pop("follow_up_days")
+        saved["settings_hash"] = hashlib.sha256(json.dumps(saved["settings"], sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+        path = self.root / "applications/runs/legacy-snapshot/run.json"
+        path.write_text(json.dumps(saved))
+        original = path.read_bytes()
+        self.assertEqual(s.load_run(self.root, "legacy-snapshot"), saved)
+        self.assertEqual(path.read_bytes(), original)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

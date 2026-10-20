@@ -22,6 +22,7 @@ from xml.etree import ElementTree
 from resolve_resume import ROOT, check_selection, current_projects, latest_release, project_fingerprint, resolve, timestamp
 from export_dashboard import export_dashboard
 from workspace_config import select_root
+import seen_index
 
 STATUSES = {"discovered", "preparing", "awaiting_answer", "ready", "submitted",
             "submission_uncertain", "failed", "skipped", "rejected", "interview", "withdrawn"}
@@ -235,18 +236,13 @@ def capture(root, data, now):
         if not isinstance(data.get(key), str) or not data[key].strip():
             raise ValueError(f"Missing non-empty job field: {key}")
     canonical = canonical_url(data["listing_url"])
-    def normal(value):
-        return " ".join(value.casefold().split())
-    identity = [normal(data[k]) for k in ("company", "role", "location")]
-    for old in records(root):
-        same_platform_id = (data.get("platform_job_id") and old.get("platform_job_id") == data["platform_job_id"]
-                            and old.get("platform") == data.get("platform"))
-        same_requisition = (data.get("employer_requisition_id") and old.get("employer_requisition_id") == data["employer_requisition_id"]
-                            and normal(old["company"]) == normal(data["company"]))
-        if old["canonical_listing_url"] == canonical or same_platform_id or same_requisition:
-            return {"duplicate": True, "application_id": old["application_id"], "status": old["status"]}
-        if [normal(old[k]) for k in ("company", "role", "location")] == identity:
+    if not (root / "applications/index/.initialized").exists():
+        seen_index.reindex(root, records(root), canonical_url)
+    old = seen_index.lookup(root, data, canonical)
+    if old:
+        if old["key"].startswith("xpost-"):
             raise ValueError(f"Possible cross-post/repost of {old['application_id']}; reconcile before capturing again")
+        return {"duplicate": True, "application_id": old["application_id"], "status": old["status"]}
     application_id = "app-" + now.strftime("%Y-%m-%d") + "-" + hashlib.sha256(canonical.encode()).hexdigest()[:10]
     directory = root / "applications/records" / application_id
     directory.mkdir(parents=True, exist_ok=False)
@@ -258,6 +254,7 @@ def capture(root, data, now):
               "job_description_sha256": digest(directory / "job-description.txt"),
               "events": [{"at": now.isoformat(), "status": "discovered"}], "submissions": []}
     atomic_json(directory / "record.json", record)
+    seen_index.update(root, record, canonical_url)
     export_csv(root)
     return {"application_id": application_id, "record": str(directory / "record.json"), "duplicate": False}
 
@@ -316,6 +313,7 @@ def event(root, args, now):
     record["events"].append(details)
     record.update(status=status, status_updated_at=now.isoformat())
     atomic_json(directory / "record.json", record)
+    seen_index.update(root, record, canonical_url)
     export_csv(root)
     return {"application_id": args.id, "status": status}
 
@@ -381,6 +379,7 @@ def main():
     check = commands.add_parser("preflight")
     check.add_argument("--id", required=True)
     commands.add_parser("export")
+    commands.add_parser("reindex")
     args = parser.parse_args()
     root = select_root(args.workspace)
     now = datetime.now(timezone.utc).astimezone()
@@ -422,6 +421,8 @@ def main():
                 result = event(root, args, now)
             elif args.command == "preflight":
                 result = preflight(root, read(root / "applications/records" / slug(args.id) / "record.json"), now)
+            elif args.command == "reindex":
+                result = seen_index.reindex(root, records(root), canonical_url)
             else:
                 result = export_csv(root)
         print(json.dumps(result, indent=2, ensure_ascii=False))

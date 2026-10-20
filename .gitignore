@@ -61,3 +61,8 @@
 __pycache__/
 *.pyc
 .DS_Store
+
+# Audited filesystem identity index and synthetic lookup checks.
+!/scripts/seen_index.py
+!/scripts/seen.sh
+!/tests/test_seen.py

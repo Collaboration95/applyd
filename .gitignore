@@ -73,3 +73,6 @@ __pycache__/
 !/tests/test_settings.py
 !/tests/test_settings_integration.py
 !/docs/settings.md
+
+# Synthetic crash-window and single-browser-writer checks.
+!/tests/test_submit_intent.py

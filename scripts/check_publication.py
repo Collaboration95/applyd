@@ -20,6 +20,7 @@ import zlib
 # .gitignore. In particular, an allowed directory is never a recursive grant.
 GENERIC_FILES = frozenset({
     ".gitignore", "README.md", "CONTRIBUTING.md", "LICENSE", "master-plan.md",
+    ".github/workflows/regression.yml", "docs/release.md",
     "scripts/workspace.py", "scripts/resolve_resume.py", "scripts/import_pdf.py",
     "scripts/export_dashboard.py", "scripts/check_publication.py", "scripts/workspace_config.py", "scripts/seen_index.py", "scripts/seen.sh",
     "scripts/settings.py", "settings.example.json", "docs/settings.md",

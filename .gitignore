@@ -228,3 +228,12 @@ __pycache__/
 !/tests/test_metrics.py
 !/tests/test_reports.py
 !/tests/test_reports_cli.py
+
+# Audited regression workflow, synthetic release smoke and public verification guide.
+!/.github/
+/.github/*
+!/.github/workflows/
+/.github/workflows/*
+!/.github/workflows/regression.yml
+!/tests/test_release_smoke.py
+!/docs/release.md

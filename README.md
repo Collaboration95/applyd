@@ -75,10 +75,11 @@ macOS and Linux with POSIX `fcntl` support. Native Windows is not supported; use
 
 ### Which agent skills are included?
 
-The repository includes `/apply-linkedin`. Other planned workflows are not part of the available skill interface.
+The repository includes `/apply-linkedin` and `/outreach`. The browser and draft-only mail adapters come from the authorized agent runtime; the default CLI returns a typed handoff when an adapter is missing. Read-only mail sync and the additional lean skills remain in blocked draft PRs.
 
 ## Project
 
+- [Verification and runtime limits](docs/release.md)
 - [Contributing](CONTRIBUTING.md)
 - [Master plan](master-plan.md)
 - [Roadmap](https://github.com/users/Collaboration95/projects/17)

@@ -62,6 +62,12 @@ class WorkflowTests(unittest.TestCase):
             "confirmed_at": (self.now - timedelta(days=1)).isoformat()}]})
         prepared = w.prepare_answers(self.root, identity, [{"question": "Synthetic question?"}], self.now)
         self.event(identity, "ready", resume_scope="backend", answers=self.root / prepared["answers_path"])
+        attempt = self.record(identity)["prepared"]
+        # Synthetic adapter observation, not a claim about any live form.
+        visible = {"attempt_id": attempt["attempt_id"], "resume_sha256": attempt["sha256"], "fields": [
+            {"occurrence_id": row["occurrence_id"], "question": row["question"], "type": row["type"], "value": row["answer"]}
+            for row in prepared["answers"]]}
+        w.review_form(self.root, identity, visible, self.now)
         return identity
 
     def record(self, identity):
@@ -152,6 +158,18 @@ class WorkflowTests(unittest.TestCase):
         (self.root / record["prepared"]["answers_path"]).write_text("[]")
         with self.assertRaisesRegex(ValueError, "snapshot was modified"):
             w.preflight(self.root, record, self.now)
+
+    def test_mismatching_form_review_blocks_preflight_and_snapshot_is_preserved(self):
+        identity = self.ready()
+        prepared = self.record(identity)["prepared"]
+        original = (self.root / prepared["review_snapshot"]).read_bytes()
+        visible = w.read(self.root / prepared["review_snapshot"])["visible"]
+        visible["fields"][0]["value"] = "Different synthetic value"
+        result = w.review_form(self.root, identity, visible, self.now)
+        self.assertFalse(result["passed"])
+        with self.assertRaisesRegex(ValueError, "review_mismatch"):
+            w.preflight(self.root, self.record(identity), self.now)
+        self.assertEqual((self.root / prepared["review_snapshot"]).read_bytes(), original)
 
     def test_preflight_rejects_and_records_off_scope_destination(self):
         identity = self.ready()

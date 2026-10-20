@@ -33,6 +33,7 @@ import setup_workspace
 import cleanup
 import outcomes
 import batches
+import reviewer
 from export_recovery import after_mutation, recover, export_state
 from zoneinfo import ZoneInfo
 
@@ -285,6 +286,15 @@ def preflight(root, record, now):
     validation = answer_core.validate_snapshot(root, record, read(root / prepared["answers_path"]), now)
     if not validation["valid"]:
         raise ValueError("answer_validation: exact answers are unknown, expired, changed or outside scope")
+    if not prepared.get("review_snapshot"):
+        raise ValueError("review_required: review the current filled form before submission")
+    review_path = root / prepared["review_snapshot"]
+    if digest(review_path) != prepared.get("review_sha256"):
+        raise ValueError("review_mismatch: stored form review was modified")
+    saved_review = read(review_path)
+    verdict = reviewer.validate_verdict(saved_review["verdict"], prepared, read(root / prepared["answers_path"]), saved_review["visible"])
+    if not verdict["valid"] or not verdict["passed"]:
+        raise ValueError("review_mismatch: see the private form-review differences before retrying")
     return {"application_id": record["application_id"], "ready": True, "resume_id": current["id"]}
 
 
@@ -301,7 +311,7 @@ def begin_submit(root, application_id, observed_url, session_id, now, deferred=F
             raise ValueError("duplicate_submission: a confirmation already exists")
     claim_path = root / "applications/browser-claim.json"
     claim_path.parent.mkdir(parents=True, exist_ok=True)
-    attempt_id = hashlib.sha256((application_id + record["prepared"]["answers_sha256"] + now.isoformat()).encode()).hexdigest()[:24]
+    attempt_id = record["prepared"]["attempt_id"]
     claim = {"application_id": application_id, "attempt_id": attempt_id,
              "session_id": slug(session_id), "observed_url": canonical_url(observed_url),
              "occurred_at": now.isoformat()}
@@ -419,6 +429,34 @@ def requeue_answers(root, now):
     return result
 
 
+def review_form(root, application_id, visible, now, deferred=False):
+    path = root / "applications/records" / slug(application_id) / "record.json"
+    record = read(path)
+    work_guard(root, record.get("run_id"), now, "review-form")
+    if record["status"] != "ready" or record.get("submission_intent") or record.get("submissions"):
+        raise ValueError("Form review requires one ready, unsubmitted attempt")
+    prepared = record["prepared"]
+    verdict = reviewer.review(prepared, read(root / prepared["answers_path"]), visible)
+    snapshot = {"visible": visible, "verdict": verdict}
+    content = (json.dumps(snapshot, indent=2, ensure_ascii=False) + "\n").encode()
+    sha = hashlib.sha256(content).hexdigest()
+    target = (root / prepared["answers_path"]).parent / ("review-" + sha + ".json")
+    if not target.exists():
+        atomic_json(target, snapshot)
+    elif digest(target) != sha:
+        raise ValueError("Review snapshot already exists with changed bytes")
+    prepared.update(review_snapshot=str(target.relative_to(root)), review_sha256=sha)
+    if verdict["passed"] and record.get("stop_reason") == "review_mismatch":
+        record["stop_reason"] = None
+    elif not verdict["passed"]:
+        record["stop_reason"] = "review_mismatch"
+    record["events"].append({"at": now.isoformat(), "status": "ready", "reason": "review_passed" if verdict["passed"] else "review_mismatch"})
+    atomic_json(path, record)
+    return finish_mutation(root, {"application_id": application_id, "passed": verdict["passed"],
+                                "stop_reason": verdict["stop_reason"], "review_snapshot": prepared["review_snapshot"],
+                                "difference_codes": [d["code"] for d in verdict["differences"]]}, deferred)
+
+
 def event(root, args, now, deferred=False):
     directory = root / "applications/records" / slug(args.id)
     record = read(directory / "record.json")
@@ -477,7 +515,7 @@ def event(root, args, now, deferred=False):
         target = attempt / Path(resume["path"]).name
         shutil.copy2(resume["path"], target)
         atomic_json(attempt / "answers.json", answers)
-        record["prepared"] = {**resume, "prepared_at": now.isoformat(), "run_id": run_id,
+        record["prepared"] = {**resume, "prepared_at": now.isoformat(), "run_id": run_id, "attempt_id": attempt.name,
                               "exact_resume_copy": str(target.relative_to(root)),
                               "answers_path": str((attempt / "answers.json").relative_to(root)),
                               "answers_sha256": digest(attempt / "answers.json")}
@@ -657,6 +695,9 @@ def main():
     progress.add_argument("--batch-id", required=True)
     progress.add_argument("--target", type=int, required=True)
     progress.add_argument("--categories", type=Path)
+    review = commands.add_parser("review-form")
+    review.add_argument("--id", required=True)
+    review.add_argument("--visible", type=Path, required=True)
     args = parser.parse_args()
     root = select_root(args.workspace)
     try:
@@ -776,6 +817,8 @@ def main():
                 result = cleanup.register_tab(root, args.run_id, args.window_id, args.tab_id, args.url, args.id, now)
             elif args.command == "batch-progress":
                 result = batches.batch_progress(records(root), args.batch_id, args.target, read(args.categories) if args.categories else None)
+            elif args.command == "review-form":
+                result = review_form(root, args.id, read(args.visible), now, args.defer_export)
             else:
                 result = {"export": recover(root, export_csv)}
         print(json.dumps(result, indent=2, ensure_ascii=False))

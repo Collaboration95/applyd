@@ -25,5 +25,11 @@
   "computer_use": {
     "enabled": false,
     "step_budget": 6
+  },
+  "outreach": {
+    "enabled": false,
+    "business_days": 10,
+    "daily_draft_cap": 3,
+    "do_not_contact": []
   }
 }

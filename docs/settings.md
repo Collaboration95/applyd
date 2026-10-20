@@ -29,6 +29,7 @@ unknown key, unsupported schema or invalid value raises `SettingsError`
 | `browser`, `resume_scope` | Optional non-empty private strings, default `null` |
 | `role_rules` | Private JSON object, default `{}`; interpreted by parent role-policy integration |
 | `computer_use` | Object with only `enabled` (boolean, default `false`) and `step_budget` (non-negative integer, default `6`); omitted nested values receive defaults. No null/unlimited budget; `0` permits no action. |
+| `outreach` | Object with only `enabled` (boolean, default `false`), `business_days` (non-negative integer, default `10`), `daily_draft_cap` (non-negative integer, default `3`) and `do_not_contact` (nonempty-string array, default `[]`). Partial objects receive defaults; null, unknown keys and boolean numbers fail. |
 
 The example contains every default and no personal facts. `browser`,
 `resume_scope`, and `role_rules` are preserved in snapshots; this module does not
@@ -113,3 +114,12 @@ ordinary external-host rule: fallback alone requires a non-empty explicit allow.
 The required live guard and adapter contract are in [computer-use.md](computer-use.md).
 `validate_settings(raw)` exposes the same strict, default-filling validation as
 `load_settings(root)` without filesystem access.
+
+Outreach uses `outreach_workspace.create_follow_up` inside the workspace writer
+lock and requires a dedicated existing run from `run-start`. Both current and
+frozen policies must enable outreach and use `apply` mode. The longer business-day
+wait, smaller draft cap and combined do-not-contact entries apply; both timezones'
+daily boundaries and both deadlines are checked. Old snapshots without outreach
+stay disabled without rewriting their bytes or hashes. Outreach reservations carry
+their own run ID; historical application/submission run IDs stay unchanged.
+See [outreach.md](outreach.md) for file/provenance checks and command hooks.

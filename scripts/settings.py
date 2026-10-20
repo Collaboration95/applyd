@@ -11,6 +11,7 @@ import re
 import tempfile
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from outreach import DEFAULT_POLICY, OutreachError, validate_policy
 
 
 DEFAULTS = {
@@ -32,6 +33,7 @@ DEFAULTS = {
     "role_rules": {},
     "follow_up_days": 14,
     "computer_use": {"enabled": False, "step_budget": 6},
+    "outreach": copy.deepcopy(DEFAULT_POLICY),
 }
 # Required fields of the original immutable schema-1 run snapshot. New optional
 # policy fields must not invalidate old snapshots or change their saved hashes.
@@ -141,6 +143,12 @@ def _validate(raw):
     if type(computer["step_budget"]) is not int or computer["step_budget"] < 0:
         _invalid("computer_use.step_budget", "a non-negative integer")
     result["computer_use"] = computer
+    if not isinstance(result["outreach"], dict):
+        _invalid("outreach", "an object with enabled/business_days/daily_draft_cap/do_not_contact only")
+    try:
+        result["outreach"] = validate_policy(result["outreach"])
+    except OutreachError as exc:
+        raise SettingsError(f"settings.json: {exc}") from exc
     for key in ("daily_cap", "per_run_cap", "per_run_minutes", "max_required_years", "follow_up_days"):
         value = result[key]
         if value is not None and (type(value) is not int or value < 0):

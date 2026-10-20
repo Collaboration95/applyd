@@ -81,3 +81,15 @@ __pycache__/
 !/scripts/answers.py
 !/tests/test_answers.py
 !/docs/answers.md
+
+# Audited current-page extractor, input schema and fictional HTML fixtures.
+!/scripts/extract_linkedin.js
+!/scripts/listing_input.py
+!/tests/extractor.test.cjs
+!/tests/test_listing_input.py
+!/tests/fixtures/
+/tests/fixtures/*
+!/tests/fixtures/linkedin-easy-card.html
+!/tests/fixtures/linkedin-no-card.html
+!/tests/fixtures/linkedin-external.html
+!/docs/extractor.md

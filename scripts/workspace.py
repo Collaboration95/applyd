@@ -272,8 +272,15 @@ def work_guard(root, run_id, now, command):
         browser_retry_guard(root, now)
 
 
-def retry_guard(record, now):
-    decision = retry_policy.check_retry(record, now, MAX_RETRIES)
+def retry_limit(root, record):
+    if root is None:
+        return MAX_RETRIES  # Compatibility for standalone pure-policy callers.
+    from budgets import retry_limit as configured_retry_limit
+    return configured_retry_limit(root, record)
+
+
+def retry_guard(record, now, root=None):
+    decision = retry_policy.check_retry(record, now, retry_limit(root, record))
     if decision.decision == retry_policy.Decision.CONFIRMED:
         raise ValueError("Confirmed application cannot retry")
     if decision.decision == retry_policy.Decision.WAITING_ANSWER:
@@ -306,6 +313,8 @@ def browser_retry_stops(root, now):
         # Validate even an exhausted/uncertain record; malformed state must not
         # silently release a browser stop. The separate incident survives later
         # confirmation/reconciliation and replacement of the retry blocker.
+        # Structural stop validation must not require an old closed run's
+        # settings file. Actual work/retry boundaries use configured limits.
         retry_policy.check_retry(record, now, MAX_RETRIES)
         incident = record.get("browser_stop", record.get("blocker"))
         if incident is None:
@@ -354,10 +363,10 @@ def save_retry_record(root, record, result, deferred=False):
 
 def retry_status(root, application_id, now):
     record = read(root / "applications/records" / slug(application_id) / "record.json")
-    return {"application_id": application_id, **retry_policy.check_retry(record, now, MAX_RETRIES).as_dict(),
+    return {"application_id": application_id, **retry_policy.check_retry(record, now, retry_limit(root, record)).as_dict(),
             "blocker_id": (record.get("blocker") or {}).get("id"),
             "retry_counts": record.get("retry_counts", {}),
-            "retry_budget": min(MAX_RETRIES, record.get("retry_budget", MAX_RETRIES)),
+            "retry_budget": min(retry_limit(root, record), record.get("retry_budget", retry_limit(root, record))),
             "blocked_on_answer_ids": record.get("blocked_on_answer_ids", []),
             "browser_stops": browser_retry_stops(root, now)}
 
@@ -371,8 +380,8 @@ def retry_failure(root, application_id, reason, now, deferred=False, *, event_de
     record = read(path)
     if "browser_stop" in record:
         validate_browser_incident(record["browser_stop"], now)
-    updated = retry_policy.next_retry_state(preserve_browser_incident(record), reason, now, MAX_RETRIES)
-    confirmed = retry_policy.check_retry(updated, now, MAX_RETRIES).decision == retry_policy.Decision.CONFIRMED
+    updated = retry_policy.next_retry_state(preserve_browser_incident(record), reason, now, retry_limit(root, record))
+    confirmed = retry_policy.check_retry(updated, now, retry_limit(root, record)).decision == retry_policy.Decision.CONFIRMED
     if confirmed and reason not in {retry_policy.Reason.LOGIN, retry_policy.Reason.PAGE_CHANGED,
                                     retry_policy.Reason.ACCOUNT_SAFETY, retry_policy.Reason.MANUAL_STOP}:
         return finish_mutation(root, {"application_id": application_id, "decision": "confirmed",
@@ -398,7 +407,7 @@ def retry_failure(root, application_id, reason, now, deferred=False, *, event_de
                 current = {"id": "browser-" + uuid4().hex,
                            "reason": reason.value, "blocked_at": now.isoformat(), "answer_ids": [], "resume": None}
         updated["browser_stop"] = json.loads(json.dumps(current))
-    decision = retry_policy.check_retry(updated, now, MAX_RETRIES)
+    decision = retry_policy.check_retry(updated, now, retry_limit(root, record))
     if updated == record:
         return finish_mutation(root, {"application_id": application_id, **decision.as_dict(),
                                       "already_recorded": True}, deferred, repeated=True)
@@ -415,7 +424,7 @@ def retry_failure(root, application_id, reason, now, deferred=False, *, event_de
 def retry_resume(root, application_id, blocker_id, evidence_path, now, deferred=False):
     directory = root / "applications/records" / slug(application_id)
     record = read(directory / "record.json")
-    decision = retry_policy.check_retry(record, now, MAX_RETRIES)
+    decision = retry_policy.check_retry(record, now, retry_limit(root, record))
     incident = record.get("browser_stop", record.get("blocker"))
     if (not isinstance(incident, dict) or incident.get("id") != blocker_id or incident.get("reason") not in {"login", "page_changed"}
             or incident.get("resume") is not None):
@@ -452,7 +461,7 @@ def retry_resume(root, application_id, blocker_id, evidence_path, now, deferred=
             if os.path.exists(temporary):
                 os.unlink(temporary)
     if decision.decision == retry_policy.Decision.RESUME_REQUIRED and (record.get("blocker") or {}).get("id") == blocker_id:
-        record = retry_policy.resume_retry(record, blocker_id, evidence_id, now, MAX_RETRIES)
+        record = retry_policy.resume_retry(record, blocker_id, evidence_id, now, retry_limit(root, record))
     # Clearing a session incident after confirmation/uncertainty/exhaustion
     # permits independent jobs only. The application's retry gate still denies
     # work, and neither its budget nor its uncertainty blocker is removed.
@@ -462,7 +471,7 @@ def retry_resume(root, application_id, blocker_id, evidence_path, now, deferred=
                               "retry_blocker_id": blocker_id, "evidence": evidence})
     return save_retry_record(root, record, {"application_id": application_id, "blocker_id": blocker_id,
                                            "browser_resumed": True,
-                                           "decision": retry_policy.check_retry(record, now, MAX_RETRIES).decision}, deferred)
+                                           "decision": retry_policy.check_retry(record, now, retry_limit(root, record)).decision}, deferred)
 
 
 def check_scope(root, record, url, now):
@@ -471,7 +480,7 @@ def check_scope(root, record, url, now):
         policies.append(settings.load_run(root, record["run_id"])["settings"])
     if all(scope_guard.allowed(url, policy) for policy in policies):
         return {"allowed": True}
-    updated = retry_policy.next_retry_state(record, "off_scope", now, MAX_RETRIES)
+    updated = retry_policy.next_retry_state(record, "off_scope", now, retry_limit(root, record))
     record.update(updated)
     record.update(stop_reason="off_scope", off_scope_url=url, status_updated_at=now.isoformat())
     if not record.get("submissions") and record["status"] != "submission_uncertain":
@@ -510,8 +519,8 @@ def preflight(root, record, now):
     work_guard(root, record.get("run_id"), now, "preflight")
     if record.get("application_id"):
         # A stale in-memory ready snapshot must not bypass a newer durable wait.
-        retry_guard(read(root / "applications/records" / slug(record["application_id"]) / "record.json"), now)
-    retry_guard(record, now)
+        retry_guard(read(root / "applications/records" / slug(record["application_id"]) / "record.json"), now, root=root)
+    retry_guard(record, now, root=root)
     if record["status"] != "ready":
         raise ValueError("Only a ready application may pass submission preflight")
     prepared = record.get("prepared")
@@ -571,7 +580,7 @@ def begin_submit(root, application_id, observed_url, session_id, now, deferred=F
         json.dump(claim, stream, sort_keys=True)
         stream.flush()
         os.fsync(stream.fileno())
-    record = retry_policy.next_retry_state(record, "submission_uncertain", now, MAX_RETRIES)
+    record = retry_policy.next_retry_state(record, "submission_uncertain", now, retry_limit(root, record))
     if (root / "applications/computer-use.lock").exists():
         # Keep the reserved claim: recovery must reconcile the interrupted intent.
         raise ValueError("browser_claimed: computer-use writer raced with Submit; reconcile the saved claim")
@@ -594,7 +603,7 @@ def recover_submit(root, now):
         path.unlink()
         return {"recovered": True, "application_id": claim["application_id"], "requires_reconciliation": False}
     else:
-        record = retry_policy.next_retry_state(preserve_browser_incident(record), "submission_uncertain", now, MAX_RETRIES)
+        record = retry_policy.next_retry_state(preserve_browser_incident(record), "submission_uncertain", now, retry_limit(root, record))
         record.update(status="submission_uncertain", status_updated_at=now.isoformat(), submission_intent=claim)
         if not any(e.get("attempt_id") == claim["attempt_id"] for e in record["events"]):
             record["events"].append({"at": now.isoformat(), "status": "submission_uncertain", "reason": "recovered_intent", "attempt_id": claim["attempt_id"]})
@@ -650,13 +659,13 @@ def prepare_answers(root, application_id, questions, now, deferred=False):
     path = root / "applications/records" / slug(application_id) / "record.json"
     record = read(path)
     work_guard(root, record.get("run_id"), now, "prepare-answers")
-    retry_guard(record, now)
+    retry_guard(record, now, root=root)
     if record.get("submissions") or record["status"] in {"submitted", "submission_uncertain"}:
         raise ValueError("Cannot prepare answers for a confirmed or uncertain submission")
     require_eligible(root, record, now)
     prepared = answer_core.prepare_answers(root, record, questions, now)
     if not prepared["ready"]:
-        record = retry_policy.next_retry_state(record, "unknown_answer", now, MAX_RETRIES,
+        record = retry_policy.next_retry_state(record, "unknown_answer", now, retry_limit(root, record),
                                                blocked_answer_ids=prepared["blocked_on_answer_ids"])
     record.update(status=prepared["status"], status_updated_at=now.isoformat(),
                   blocked_on_answer_ids=prepared["blocked_on_answer_ids"],
@@ -682,11 +691,11 @@ def requeue_answers(root, now):
         # The resolver retains missing/unrepresented IDs and returns actual
         # unresolved IDs. Only its confirmed difference may release a blocker.
         resolved = set(record.get("blocked_on_answer_ids", [])) - set(update["blocked_on_answer_ids"])
-        updated = retry_policy.resolve_answer_blocker(record, resolved, now, MAX_RETRIES)
+        updated = retry_policy.resolve_answer_blocker(record, resolved, now, retry_limit(root, record))
         if update["blocked_on_answer_ids"]:
-            updated = retry_policy.next_retry_state(updated, "unknown_answer", now, MAX_RETRIES,
+            updated = retry_policy.next_retry_state(updated, "unknown_answer", now, retry_limit(root, record),
                                                      blocked_answer_ids=update["blocked_on_answer_ids"])
-        decision = retry_policy.check_retry(updated, now, MAX_RETRIES)
+        decision = retry_policy.check_retry(updated, now, retry_limit(root, record))
         reasons = list(update.get("reasons", []))
         if decision.decision != retry_policy.Decision.ELIGIBLE:
             reasons.append("retry_" + decision.decision.value)
@@ -710,7 +719,7 @@ def review_form(root, application_id, visible, now, deferred=False):
     path = root / "applications/records" / slug(application_id) / "record.json"
     record = read(path)
     work_guard(root, record.get("run_id"), now, "review-form")
-    retry_guard(record, now)
+    retry_guard(record, now, root=root)
     if record["status"] != "ready" or record.get("submission_intent") or record.get("submissions"):
         raise ValueError("Form review requires one ready, unsubmitted attempt")
     prepared = record["prepared"]
@@ -766,10 +775,10 @@ def event(root, args, now, deferred=False):
     if status in {"preparing", "ready"}:
         require_eligible(root, record, now)
         work_guard(root, record.get("run_id"), now, "event")
-        if status == "preparing" and retry_policy.check_retry(record, now, MAX_RETRIES).decision == retry_policy.Decision.WAITING_ANSWER:
+        if status == "preparing" and retry_policy.check_retry(record, now, retry_limit(root, record)).decision == retry_policy.Decision.WAITING_ANSWER:
             return finish_mutation(root, {"application_id": args.id, "status": record["status"],
                                           "decision": "waiting_answer", "already_recorded": True}, deferred, repeated=True)
-        retry_guard(record, now)
+        retry_guard(record, now, root=root)
     uncertain = (record["status"] == "submission_uncertain" or record.get("submission_intent") is not None
                  or record.get("stop_reason") == "submission_uncertain"
                  or (record.get("blocker") or {}).get("reason") == "submission_uncertain")
@@ -845,7 +854,7 @@ def event(root, args, now, deferred=False):
         shutil.copy2(args.evidence, evidence)
         details.update(reconciliation_path=str(evidence.relative_to(root)), reconciliation_sha256=digest(evidence))
     if status == "submission_uncertain":
-        record = retry_policy.next_retry_state(preserve_browser_incident(record), "submission_uncertain", now, MAX_RETRIES)
+        record = retry_policy.next_retry_state(preserve_browser_incident(record), "submission_uncertain", now, retry_limit(root, record))
     if details.get("confirmation_path") or details.get("reconciliation_path"):
         # Clear uncertainty only in this evidence-backed reconciliation path.
         # Counts, budget and independent browser incidents remain untouched.
@@ -914,7 +923,7 @@ def fallback_session(root, application_id, run_id, session_id, plan, now, adapte
         if record.get("run_id") != run_id or record.get("source") != "linkedin_job_page":
             raise ValueError("fallback_run_or_source_mismatch")
         work_guard(root, run_id, current, "computer-use")
-        retry_guard(record, current)
+        retry_guard(record, current, root=root)
         require_eligible(root, record, current)
         settings.check_submission(root, {**record, "status": "ready"}, current)
         check_scope(root, record, plan["initial_url"], current)
@@ -1179,7 +1188,7 @@ def main():
             elif args.command == "browser-guard":
                 work_guard(root, args.run_id, now, "browser-guard")
                 if args.id:
-                    retry_guard(read(root / "applications/records" / slug(args.id) / "record.json"), now)
+                    retry_guard(read(root / "applications/records" / slug(args.id) / "record.json"), now, root=root)
                 result = {"browser_allowed": True}
             elif args.command == "reindex":
                 result = seen_index.reindex(root, records(root), canonical_url)
@@ -1232,7 +1241,7 @@ def main():
             elif args.command == "scope-check":
                 record = read(root / "applications/records" / slug(args.id) / "record.json")
                 work_guard(root, record.get("run_id"), now, "scope-check")
-                retry_guard(record, now)
+                retry_guard(record, now, root=root)
                 result = check_scope(root, record, args.url, now)
             elif args.command == "run-summary":
                 result = cleanup.run_summary(root, args.run_id, now)
@@ -1240,7 +1249,7 @@ def main():
                 result = cleanup.cleanup_run(root, args.run_id, now, execute=args.execute, export_callback=lambda: recover(root, export_csv))
             elif args.command == "register-tab":
                 work_guard(root, args.run_id, now, "register-tab")
-                retry_guard(read(root / "applications/records" / slug(args.id) / "record.json"), now)
+                retry_guard(read(root / "applications/records" / slug(args.id) / "record.json"), now, root=root)
                 result = cleanup.register_tab(root, args.run_id, args.window_id, args.tab_id, args.url, args.id, now)
             elif args.command == "batch-progress":
                 result = batches.batch_progress(records(root), args.batch_id, args.target, read(args.categories) if args.categories else None)

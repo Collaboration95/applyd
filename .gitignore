@@ -207,3 +207,9 @@ __pycache__/
 !/.claude/skills/outreach/
 /.claude/skills/outreach/*
 !/.claude/skills/outreach/SKILL.md
+
+# Generic durable action/usage budgets and synthetic boundary checks.
+!/scripts/budgets.py
+!/docs/budgets.md
+!/tests/test_budgets.py
+!/tests/test_budget_workspace.py

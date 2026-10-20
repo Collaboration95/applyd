@@ -10,6 +10,7 @@ from typing import Callable, ContextManager
 from zoneinfo import ZoneInfo
 
 import batches
+import budgets
 import retry_policy
 import settings
 
@@ -32,9 +33,13 @@ class Action:
     record_ref: str | None = None
     remaining: int | None = None
     reason: str | None = None
+    budget_ref: str | None = None
 
     def as_dict(self):
-        return {**asdict(self), "kind": self.kind.value}
+        result = {**asdict(self), "kind": self.kind.value}
+        if self.budget_ref is None:
+            result.pop("budget_ref")
+        return result
 
 
 @dataclass(frozen=True)
@@ -51,6 +56,10 @@ class Observation:
     """Only artifact references/static reason codes cross the adapter boundary."""
     evidence_ref: str | None = None
     failure: retry_policy.Reason | None = None
+    usage: dict | None = None
+
+    def __post_init__(self):
+        object.__setattr__(self, "usage", budgets.validate_usage(self.usage))
 
 
 @dataclass(frozen=True)
@@ -130,13 +139,15 @@ class Runner:
                     if action.application_id else None)
         if action.record_ref != expected:
             raise ValueError("Invalid saved runner record reference")
+        if action.budget_ref is not None and action.budget_ref != budgets.reference(self.run_id):
+            raise ValueError("Invalid saved runner budget reference")
         if ((action.kind in {Kind.PREPARE, Kind.REVIEW, Kind.SUBMIT} and not action.application_id)
                 or (action.kind == Kind.DISCOVER and action.application_id)):
             raise ValueError("Invalid saved runner action identity")
         return action
 
     def _save(self, state):
-        # This is deliberately the only runner persistence target. Never run.json.
+        # Runner checkpoints stay separate from budget.json and immutable run.json.
         from workspace import atomic_json
 
         atomic_json(self._path(self.state_ref), state)
@@ -145,7 +156,28 @@ class Runner:
         return self._action({"kind": kind, "run_id": self.run_id,
             "sequence": state["sequence"] + 1, "application_id": app,
             "record_ref": f"applications/records/{app}/record.json" if app else None,
-            "remaining": remaining, "reason": reason})
+            "remaining": remaining, "reason": reason,
+            "budget_ref": budgets.reference(self.run_id) if kind in {Kind.HANDOFF, Kind.COMPLETE} else None})
+
+    def _budget(self, state, current, frozen, *, reserved_sequence=None):
+        saved = budgets.load(self.root, self.run_id, state["sequence"])
+        budgets.check(saved, current, frozen, reserved_sequence=reserved_sequence)
+        return saved
+
+    def _boundary(self, state, action, now, *, begun=False):
+        """Fresh policy/accounting after the mandatory guard, before any call."""
+        queue = self.hooks.queue(self.run_id, now)
+        current, frozen, _, _, _, reason = self._policy(state, queue, now)
+        if reason:
+            raise budgets.BudgetStop(reason)
+        saved = self._budget(state, current, frozen, reserved_sequence=action.sequence if begun else None)
+        if action.application_id and not begun:
+            record = next(r for r in queue.records if r["application_id"] == action.application_id)
+            limit = min(budgets.retry_limit(self.root, record), frozen["work_budget"]["max_retries"])
+            decision = retry_policy.check_retry(record, now, limit)
+            if decision.decision != retry_policy.Decision.ELIGIBLE:
+                raise budgets.BudgetStop("retry_" + decision.decision.value)
+        return saved, current, frozen
 
     def _policy(self, state, queue, now):
         """Use existing accounting/identity semantics, never a mutable quota counter."""
@@ -230,6 +262,10 @@ class Runner:
                     reason="submission_uncertain" if pending.kind == Kind.SUBMIT else "unverified_action")
         queue = self.hooks.queue(self.run_id, now)
         current, frozen, groups, progress, remaining, reason = self._policy(state, queue, now)
+        try:
+            self._budget(state, current, frozen)
+        except budgets.BudgetStop as exc:
+            reason = reason or str(exc)
         if reason:
             kind = Kind.COMPLETE if reason == "quota_reached" else Kind.HANDOFF
             action = self._new(state, kind, remaining=remaining, reason=reason)
@@ -237,7 +273,8 @@ class Runner:
             candidates = []
             decisions = {}
             for group in groups:
-                checks = [(r, retry_policy.check_retry(r, now)) for r in group]
+                checks = [(r, retry_policy.check_retry(r, now, min(budgets.retry_limit(self.root, r),
+                           frozen["work_budget"]["max_retries"]))) for r in group]
                 # Stronger than batch credit: even malformed/unproven confirmation
                 # claims deny replay, and an empty intent is still uncertainty.
                 blocked = next((d.decision.value for _, d in checks if d.decision in {
@@ -277,7 +314,7 @@ class Runner:
 
     def _manual(self, action, reason):
         return Action(Kind.HANDOFF, self.run_id, action.sequence, action.application_id,
-                      action.record_ref, action.remaining, reason)
+                      action.record_ref, action.remaining, reason, budgets.reference(self.run_id))
 
     def plan_next(self, now):
         """Persist one next action without requiring an execution adapter."""
@@ -327,6 +364,15 @@ class Runner:
                     now = batches.validate_event_time(clock())
                     if self.hooks.guard(action, now) is not None:
                         raise ValueError("Runner guard must explicitly succeed with None")
+                    # The guard can take time or tighten settings. Submit gets a
+                    # fresh deadline/quota/retry/budget check before its claim.
+                    now = batches.validate_event_time(clock())
+                    budget, current, frozen = self._boundary(state, action, now)
+                except budgets.BudgetStop as exc:
+                    state["last_result"] = str(exc)
+                    self._save(state)
+                    results.append(self._manual(action, str(exc)))
+                    break
                 except Exception:
                     state["last_result"] = "gate_blocked"
                     self._save(state)
@@ -335,14 +381,21 @@ class Runner:
                 state.update(sequence=action.sequence, pending={"action": action.as_dict(), "started_at": now.isoformat()},
                              last_result="pending")
                 self._save(state)  # Failure here must prevent ALL adapter calls.
+                budgets.reserve(self.root, self.run_id, budget, action.sequence, current, frozen)
                 failure_reported = False
                 reason = retry_policy.Reason.SUBMISSION_UNCERTAIN if action.kind == Kind.SUBMIT else retry_policy.Reason.UNSUPPORTED
                 try:
                     if action.kind == Kind.SUBMIT and self.hooks.begin_submit(action, now) is not True:
                         raise ValueError("Submit was not authorized")
+                    if action.kind == Kind.SUBMIT:
+                        # Observing/claiming Submit may take time. Refuse a late
+                        # click but retain the claim/pending for reconciliation.
+                        now = batches.validate_event_time(clock())
+                        self._boundary(state, action, now, begun=True)
                     observation = self.adapter(action)
                     if not isinstance(observation, Observation):
                         raise ValueError("Invalid runner observation")
+                    budgets.observe(self.root, self.run_id, budget, action.sequence, observation.usage)
                     if observation.failure is not None:
                         reason = (retry_policy.Reason.SUBMISSION_UNCERTAIN if action.kind == Kind.SUBMIT
                                   else retry_policy.Reason(observation.failure))

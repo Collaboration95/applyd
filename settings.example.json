@@ -31,5 +31,11 @@
     "business_days": 10,
     "daily_draft_cap": 3,
     "do_not_contact": []
+  },
+  "work_budget": {
+    "max_actions": 100,
+    "max_retries": 3,
+    "provider_token_cap": null,
+    "provider_cost_cap": null
   }
 }

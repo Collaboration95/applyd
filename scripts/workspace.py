@@ -26,7 +26,8 @@ from workspace_config import select_root
 import seen_index
 import settings
 import answers as answer_core
-from listing_input import ListingError, validate_listing
+from listing_input import ListingError, validate_listing, normalize_listing_contacts
+import contacts
 import safety
 import scope_guard
 import setup_workspace
@@ -597,7 +598,7 @@ def recover_submit(root, now):
 
 def capture(root, data, now, deferred=False):
     work_guard(root, data.get("run_id") if isinstance(data, dict) else None, now, "capture")
-    data = dict(data)
+    data = normalize_listing_contacts(data, now)
     if data.get("source") != "linkedin_job_page":
         raise ListingError("source", "only linkedin_job_page facts are accepted")
     policy = settings.load_settings(root)
@@ -860,7 +861,7 @@ def event(root, args, now, deferred=False):
 
 def export_csv(root, snapshot=None):
     snapshot = records(root) if snapshot is None else list(snapshot)
-    fields = ["application_id", "company", "role", "location", "platform", "platform_job_id",
+    fields = ["contacts", "application_id", "company", "role", "location", "platform", "platform_job_id",
               "employer_requisition_id", "listing_url", "application_url", "captured_at", "status",
               "status_updated_at", "resume_id", "source_master_id", "resume_sha256", "record_path",
               "submitted_at", "confirmation_path", "notes", "outcome", "latest_outcome_at", "follow_up_at"]
@@ -877,6 +878,7 @@ def export_csv(root, snapshot=None):
                 row.update(resume_id=saved.get("id", ""), source_master_id=saved.get("source_master_id", ""),
                            resume_sha256=saved.get("sha256", ""), confirmation_path=saved.get("confirmation_path", ""),
                            record_path=f"applications/records/{record['application_id']}/record.json")
+                row["contacts"] = contacts.contacts_json(record.get("contacts"))
                 output.writerow({k: "'" + str(v) if str(v).lstrip().startswith(("=", "+", "-", "@")) else v for k, v in row.items()})
         os.replace(temporary, target)
     finally:
@@ -884,6 +886,18 @@ def export_csv(root, snapshot=None):
             os.unlink(temporary)
     dashboard = export_dashboard(root, snapshot=snapshot)
     return {"path": str(target), "records": len(snapshot), "dashboard": dashboard["path"]}
+
+
+def contact_change(root, application_id, now, *, add=None, remove=None, email_text=None, deferred=False):
+    path = root / "applications/records" / slug(application_id) / "record.json"
+    record = read(path)
+    if add is not None:
+        description = (root / record["job_description_path"]).read_text()
+        updated = contacts.add_contact(record, add, now, jd_text=description, email_text=email_text)
+    else:
+        updated = contacts.remove_contact(record, remove)
+    persist_record(root, updated)
+    return finish_mutation(root, {"application_id": application_id, "contacts": updated.get("contacts", [])}, deferred)
 
 
 def import_settings(root, change, deferred=False):
@@ -1012,6 +1026,12 @@ def main():
     review.add_argument("--visible", type=Path, required=True)
     eligible = commands.add_parser("eligibility", help="Evaluate captured full listing without a model")
     eligible.add_argument("--id", required=True)
+    contact = commands.add_parser("contact")
+    contact.add_argument("--id", required=True)
+    change = contact.add_mutually_exclusive_group(required=True)
+    change.add_argument("--add", type=Path)
+    change.add_argument("--remove")
+    contact.add_argument("--email-evidence", type=Path)
     args = parser.parse_args()
     root = select_root(args.workspace)
     try:
@@ -1146,6 +1166,10 @@ def main():
                 result = batches.batch_progress(records(root), args.batch_id, args.target, read(args.categories) if args.categories else None)
             elif args.command == "eligibility":
                 result = listing_decision(root, read(root / "applications/records" / slug(args.id) / "record.json"), now)
+            elif args.command == "contact":
+                result = contact_change(root, args.id, now, add=read(args.add) if args.add else None,
+                                        remove=args.remove, email_text=args.email_evidence.read_text() if args.email_evidence else None,
+                                        deferred=args.defer_export)
             elif args.command == "review-form":
                 result = review_form(root, args.id, read(args.visible), now, args.defer_export)
             else:

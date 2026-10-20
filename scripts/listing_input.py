@@ -8,6 +8,8 @@ import json
 import re
 import sys
 from urllib.parse import parse_qs, urlsplit
+from contacts import (ContactError, from_hiring_team, validate_contact_inputs,
+                      validate_contacts)
 
 
 class ListingError(ValueError):
@@ -27,7 +29,7 @@ URL_FIELDS = {
     "listing_url", "application_url", "canonical_listing_url", "canonical_url",
     "source_url", "destination_url", "apply_url",
 }
-ALLOWED_FIELDS = TEXT_FIELDS | URL_FIELDS | {"easy_apply", "hiring_team"}
+ALLOWED_FIELDS = TEXT_FIELDS | URL_FIELDS | {"easy_apply", "hiring_team", "contacts"}
 
 
 def _url(value, field):
@@ -144,6 +146,32 @@ def validate_listing(data):
         # job's canonical key, even when it is the observed extraction source.
         result.setdefault("source_url", result["listing_url"])
         result["listing_url"] = canonical
+    if "contacts" in result:
+        try:
+            result["contacts"] = validate_contact_inputs(
+                result["contacts"], jd_text=result["job_description"])
+        except ContactError as exc:
+            raise ListingError(exc.field, exc.reason) from exc
+    return result
+
+
+def normalize_listing_contacts(data, now):
+    """Return a copy with persisted contacts, before capture performs any writes.
+
+    Call at the ``capture`` boundary, after CLI listing validation, to also
+    cover direct internal callers. The existing extractor
+    card shape stays intact. Its provenance/time come from this capture, while
+    explicit supplied contact timestamps remain exact.
+    """
+    result = copy.deepcopy(data)
+    try:
+        supplied = validate_contacts(result.get("contacts"), now,
+                                     jd_text=result.get("job_description"))
+        result["contacts"] = validate_contacts(
+            from_hiring_team(result.get("hiring_team"), now) + supplied, now,
+            jd_text=result.get("job_description"))
+    except ContactError as exc:
+        raise ListingError(exc.field, exc.reason) from exc
     return result
 
 

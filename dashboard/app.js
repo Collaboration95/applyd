@@ -122,8 +122,37 @@
     const sub = C.latestSubmission(app); $("detail-meta").replaceChildren(pill(app.status), el("span", sub ? dateText(sub.at) : "Not submitted"), el("span", `Applied by: ${sub?.applied_by || app.applied_by || "Not recorded"}`));
     const links = [safeLink("Original listing ↗", app.job_url), safeLink("Application page ↗", app.application_url), safeLink("Saved record ↗", app.record_url)].filter(Boolean); $("detail-links").replaceChildren(...links);
     $("detail-description").textContent = app.description || "No saved job description.";
+    renderContacts(app.contacts);
     $("detail-events").replaceChildren(...[...(app.events || [])].sort((a,b) => Date.parse(b.at) - Date.parse(a.at)).map((event) => { const li = el("li"); li.append(el("time", dateText(event.at)), el("span", LABELS[event.status] || event.status)); if (event.note) li.append(el("p", event.note)); return li; }));
     $("details").showModal();
+  }
+  function contactProfileLink(value) {
+    if (typeof value !== "string" || !/^https?:\/\/[^/]/i.test(value) || /[\s\x00-\x1f\x7f\\]/.test(value)) return null;
+    try {
+      const url = new URL(value);
+      if (!["http:", "https:"].includes(url.protocol) || !url.hostname || url.username || url.password) return null;
+      return safeLink(value, value);
+    } catch { return null; }
+  }
+  function renderContacts(contacts) {
+    let section = $("detail-contacts");
+    if (!section) { section = el("section"); section.id = "detail-contacts"; $("details").append(section); }
+    section.replaceChildren(el("h3", "Contacts"));
+    const entries = Array.isArray(contacts) ? contacts.filter((contact) => contact && typeof contact === "object" && !Array.isArray(contact)) : [];
+    if (!entries.length) { section.append(el("p", "No saved contacts.")); return; }
+    const list = el("ul");
+    for (const contact of entries) {
+      const item = el("li"), facts = el("dl");
+      for (const [key, label] of [["name", "Name"], ["headline", "Headline"], ["profile_url", "Profile"], ["email", "Email"], ["source", "Source"], ["captured_at", "Captured at"], ["relationship", "Relationship"], ["contact_id", "Contact ID"]]) {
+        const value = typeof contact[key] === "string" ? contact[key] : null;
+        const detail = el("dd");
+        detail.append(key === "profile_url" ? (contactProfileLink(value) || el("span", value || "Not recorded")) : el("span", value || "Not recorded"));
+        facts.append(el("dt", label), detail);
+      }
+      facts.append(el("dt", "Verification"), el("dd", contact.verified === false ? "Unverified" : "Not recorded"));
+      item.append(facts); list.append(item);
+    }
+    section.append(list);
   }
   function renderQuestions() {
     const inbox = state.data.inbox || { questions: [] }, questions = inbox.questions || [];

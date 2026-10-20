@@ -174,3 +174,11 @@ __pycache__/
 !/tests/test_eligibility.py
 !/tests/test_eligibility_facts.py
 !/tests/test_eligibility_integration.py
+
+# Generic visible-contact schema, safe details rendering and synthetic fixtures.
+!/scripts/contacts.py
+!/docs/contacts.md
+!/tests/test_contacts.py
+!/tests/test_contacts_cli.py
+!/tests/test_contacts_integration.py
+!/tests/contacts.test.cjs

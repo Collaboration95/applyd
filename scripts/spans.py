@@ -3,7 +3,7 @@
 The workspace writer owns all ledger changes (including imported tool spans).
 Telemetry failure is sticky and never retries the measured operation.
 """
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from datetime import datetime, timedelta
 from statistics import median
@@ -121,7 +121,7 @@ class Recorder:
         self.attempt_id = attempt_id
 
     @contextmanager
-    def span(self, phase, channel='tool', *, counters=None, model=None):
+    def span(self, phase, channel='tool', *, counters=None, model=None, writer=None):
         row = None
         def begin():
             nonlocal row
@@ -135,7 +135,8 @@ class Recorder:
                 ended_at=None, duration_seconds=None, outcome='open', coverage='open', counters=counters or {}, model=model))
             self.rows.append(row); self._save()
             return started
-        started = self._safe(begin)
+        with writer() if writer else nullcontext():
+            started = self._safe(begin)
         token = CURRENT.set(self)
         if row is not None:
             self.stack.append(row)
@@ -156,7 +157,8 @@ class Recorder:
                     if row['model'] is not None and row['channel'] == 'model' and row['model']['output_tokens'] is not None:
                         row['model']['generation_seconds'] = row['duration_seconds']
                     validate(row); self._save()
-                self._safe(finish)
+                with writer() if writer else nullcontext():
+                    self._safe(finish)
 
     def call(self, phase, channel, fn, **kwargs):
         with self.span(phase, channel, **kwargs):
@@ -331,19 +333,49 @@ def summarize(records, rows, *, start=None, end=None):
             r = parent
         return False
     roots = [r for r in rows if measured(r) and not ancestor(r)]
-    intervals, waits, process_intervals, process_waits, aligned = [], [], {}, {}, True
-    # Waits apply only to their own process: another process can remain active.
+    intervals, aligned = [], True
+    placed = {}
     for r in rows:
         if not measured(r):
             continue
         a = batches.validate_event_time(r['started_at']); b = a + timedelta(seconds=r['duration_seconds'])
         if abs((batches.validate_event_time(r['ended_at'])-b).total_seconds()) > .01:
             aligned = False
-        waiting = r['channel'] in {'user_wait', 'blocked_wait'}
-        (waits if waiting else intervals).append((a,b))
-        (process_waits if waiting else process_intervals).setdefault(r['process_id'], []).append((a,b))
-    active_intervals = [interval for pid, values in process_intervals.items()
-                        for interval in _subtract(values, process_waits.get(pid, []))]
+        placed[(r['run_id'], r['span_id'])] = (a, b)
+        if r['channel'] not in {'user_wait', 'blocked_wait'}:
+            intervals.append((a, b))
+    # An inclusive caller is blocked by a descendant wait even across a tool
+    # process boundary. Propagate only along that dependency chain, retaining
+    # independently measured concurrent work; union all resulting fragments.
+    excluded, unknown_wait = {}, False
+    selected_keys = {(r['run_id'], r['span_id']) for r in rows}
+    for wait in all_rows:
+        if wait['channel'] not in {'user_wait', 'blocked_wait'}:
+            continue
+        ancestors, current = [], wait
+        while current['parent_id']:
+            key = (current['run_id'], current['parent_id'])
+            if key not in index:
+                break
+            ancestors.append(key)
+            current = index[key]
+        # Selected inclusive samples keep their full durations. Their observed
+        # dependencies must also apply when a child's start is outside the period.
+        if (wait['run_id'], wait['span_id']) not in selected_keys and not selected_keys.intersection(ancestors):
+            continue
+        if not measured(wait):
+            unknown_wait = True
+            continue
+        a = batches.validate_event_time(wait['started_at'])
+        b = a + timedelta(seconds=wait['duration_seconds'])
+        if abs((batches.validate_event_time(wait['ended_at'])-b).total_seconds()) > .01:
+            aligned = False
+        for key in ancestors:
+            excluded.setdefault(key, []).append((a, b))
+    active_intervals = [part for r in rows
+                        if measured(r) and r['channel'] not in {'user_wait', 'blocked_wait'}
+                        for part in _subtract([placed[(r['run_id'], r['span_id'])]],
+                                              excluded.get((r['run_id'], r['span_id']), []))]
     active = _union(active_intervals)
     confirmations, confirmed_runs = [], []
     for group in batches._groups(records):
@@ -368,7 +400,7 @@ def summarize(records, rows, *, start=None, end=None):
     wall_seconds = sum((b-a).total_seconds() for a,b in run_windows.values()) if run_windows and len(ends)==len(begins) else None
     active_confirmations = [at for at, runs in confirmed_runs if any(r['run_id'] in runs and measured(r) and batches.validate_event_time(r['started_at']) <= at <= batches.validate_event_time(r['ended_at']) for r in workflow)]
     timed_confirmations = [at for at, runs in confirmed_runs if any(rid in run_windows and run_windows[rid][0] <= at <= run_windows[rid][1] for rid in runs)]
-    active = max(0., active) if aligned and intervals and not any(r['channel'] in {'user_wait','blocked_wait'} and not measured(r) for r in rows) else None
+    active = max(0., active) if aligned and not orphaned and intervals and not unknown_wait else None
     counters = {k: sum(r['counters'].get(k, 0) for r in rows if measured(r)) if any(k in r['counters'] and measured(r) for r in rows) else None for k in sorted(COUNTERS)}
     counter_coverage = [{'counter':k, 'measured_spans':sum(k in r['counters'] and measured(r) for r in rows), 'unknown_spans':sum(k in r['counters'] and not measured(r) for r in rows)} for k in sorted(COUNTERS)]
     process_effort = sum(_union([(batches.validate_event_time(r['started_at']), batches.validate_event_time(r['started_at']) + timedelta(seconds=r['duration_seconds'])) for r in roots if r['process_id']==pid]) for pid in sorted({r['process_id'] for r in roots})) if aligned and roots else None

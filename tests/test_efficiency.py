@@ -292,3 +292,104 @@ const t=T.create({context:{run_id:'run-test',application_id:'synthetic-app',atte
         self.assertEqual(report['output_tokens_per_second'],6)
         self.assertEqual(report['measured_spans'],1)
         self.assertEqual(spans.quantiles([1,2,3,4]),{'samples':4,'median_seconds':2.5,'p95_seconds':4})
+
+class DescendantWaitRegressionTests(unittest.TestCase):
+    setUp = SpanTests.setUp
+
+    def rows(self):
+        with self.rec.span('workflow', 'orchestration') as parent:
+            self.clock.advance(10)
+        child = {**parent, 'span_id':'child', 'parent_id':parent['span_id'],
+                 'process_id':'browser', 'phase':'form_filling', 'channel':'browser'}
+        wait = {**child, 'span_id':'wait', 'parent_id':'child',
+                'phase':'handoff', 'channel':'user_wait'}
+        return [parent, child, wait]
+
+    def test_cross_process_fully_blocking_descendant_wait_erases_inclusive_ancestors(self):
+        for channel in ('user_wait', 'blocked_wait'):
+            rows = self.rows()
+            rows[-1]['channel'] = channel
+            result = spans.summarize([], rows)
+            self.assertEqual(result['critical_path_active_seconds'], 0)
+            self.assertEqual(result['summed_process_effort_seconds'], 20)
+
+    def test_overlapping_waits_and_independent_sibling_preserve_only_real_concurrency(self):
+        rows = self.rows()
+        rows[-1].update(started_at=(NOW+timedelta(seconds=2)).isoformat(),
+                        ended_at=(NOW+timedelta(seconds=8)).isoformat(), duration_seconds=6)
+        rows.append({**rows[-1], 'span_id':'wait2',
+                     'started_at':(NOW+timedelta(seconds=5)).isoformat(),
+                     'ended_at':(NOW+timedelta(seconds=9)).isoformat(), 'duration_seconds':4})
+        self.assertEqual(spans.summarize([], rows)['critical_path_active_seconds'], 3)
+        rows.append({**rows[1], 'span_id':'independent', 'process_id':'parallel',
+                     'started_at':(NOW+timedelta(seconds=4)).isoformat(),
+                     'ended_at':(NOW+timedelta(seconds=7)).isoformat(), 'duration_seconds':3})
+        self.assertEqual(spans.summarize([], rows)['critical_path_active_seconds'], 6)
+        # Explicit concurrent siblings remain work even in one async process.
+        rows[-1]['process_id'] = 'browser'
+        self.assertEqual(spans.summarize([], rows)['critical_path_active_seconds'], 6)
+
+    def test_period_keeps_dependencies_of_inclusive_parent_samples(self):
+        rows = self.rows()
+        rows[-1].update(started_at=(NOW+timedelta(seconds=2)).isoformat(),
+                        ended_at=(NOW+timedelta(seconds=8)).isoformat(), duration_seconds=6)
+        period = {'start':NOW, 'end':NOW+timedelta(seconds=1)}
+        self.assertEqual(spans.summarize([], rows, **period)['critical_path_active_seconds'], 4)
+        rows[-1].update(ended_at=None, duration_seconds=None, coverage='open', outcome='open')
+        self.assertIsNone(spans.summarize([], rows, **period)['critical_path_active_seconds'])
+
+    def test_unknown_descendant_wait_remains_unknown(self):
+        rows = self.rows()
+        rows[-1].update(ended_at=None, duration_seconds=None, coverage='open', outcome='open')
+        self.assertIsNone(spans.summarize([], rows)['critical_path_active_seconds'])
+
+class ConnectedBaselineRegressionTests(unittest.TestCase):
+    def test_connected_executor_uses_actual_receipts_ingestion_and_confirmations(self):
+        import synthetic_baseline
+        verify, ingest = resume_assets.verify, spans.Recorder.ingest
+        imported = []
+        def ingest_row(recorder, row):
+            imported.append(deepcopy(row))
+            return ingest(recorder, row)
+        with patch.object(resume_assets, 'verify', wraps=verify) as verification, patch.object(spans.Recorder, 'ingest', ingest_row):
+            report = synthetic_baseline.connected_run()
+        self.assertGreater(verification.call_count, 0)
+        self.assertEqual(report['uploads'], 0)
+        self.assertEqual(report['clicks'], 1)
+        self.assertEqual(report['unique_confirmations'], 1)
+        self.assertTrue(report['workflow_completed'])
+        self.assertTrue(report['export_clean'])
+        self.assertEqual(len(imported), report['imported_form_spans']*2)
+        self.assertTrue(all(row['parent_id'] and row['application_id'] and row['attempt_id'] for row in imported))
+        self.assertEqual(report['wall_run_seconds'], report['measured_active_seconds'])
+        self.assertGreater(report['wall_run_seconds'], report['time_to_first_confirmation_seconds'])
+
+    def test_connected_corrupt_receipt_forces_real_verified_upload(self):
+        import synthetic_baseline
+        report = synthetic_baseline.connected_run(fault='receipt_corrupt')
+        self.assertEqual(report['uploads'], 1)
+        self.assertEqual(report['path_entries'], 1)
+        self.assertEqual(report['unique_confirmations'], 1)
+
+    def test_both_schedules_refuse_failed_readback_or_independent_review(self):
+        import synthetic_baseline
+        original = w.event
+        for reference in (False, True):
+            for fault in ('write_ignored', 'review_mismatch'):
+                with self.subTest(reference=reference, fault=fault):
+                    statuses = []
+                    def event(root, args, *a, **kw):
+                        statuses.append(args.status)
+                        return original(root, args, *a, **kw)
+                    with patch.object(w, 'event', side_effect=event):
+                        with self.assertRaisesRegex(ValueError, 'synthetic_workflow_not_verified'):
+                            synthetic_baseline.connected_run(reference=reference, fault=fault)
+                    self.assertNotIn('submitted', statuses)
+
+class OrphanedWaitRegressionTests(unittest.TestCase):
+    setUp = SpanTests.setUp
+    rows = DescendantWaitRegressionTests.rows
+    def test_orphaned_wait_dependency_is_not_a_confirmed_active_denominator(self):
+        rows = self.rows()
+        rows[-1]['parent_id'] = 'unobserved-parent'
+        self.assertIsNone(spans.summarize([], rows)['critical_path_active_seconds'])

@@ -74,7 +74,7 @@ def build_runner(root, run_id, brief_file, adapter=None, *, monotonic=None, defe
         observe = getattr(adapter, "observe_url", None)
         if not callable(observe):
             raise ValueError("runner_observed_identity_required")
-        observed = observe(action)
+        observed = spans.LiveAdapter(adapter).observe_url(action)
         return w.begin_submit(root, action.application_id, observed, run_id, now, deferred=True).get("click_authorized") is True
 
     def verified_file(path, expected):

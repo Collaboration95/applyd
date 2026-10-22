@@ -452,6 +452,85 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(self.state()["sequence"], 2)
         self.assertEqual(self.parent.calls.count("adapter"), 2)
 
+class WorkflowExportRegressionTests(unittest.TestCase):
+    def test_workflow_includes_checkpoint_on_success_stop_and_adapter_failure(self):
+        from dataclasses import replace
+        import spans
+        for mode in ('success', 'stop', 'failure', 'export_failure'):
+            with self.subTest(mode=mode):
+                # Each case gets a separate run ledger and authoritative state.
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    w.atomic_json(root/'settings.json', {})
+                    settings.run_start(root, 'run-test', NOW)
+                    parent = Parent(root)
+                    parent.put(job('one'))
+                    seconds = [0]
+                    checkpoints = []
+                    def adapter(action):
+                        seconds[0] += 1
+                        if mode == 'failure': raise TimeoutError()
+                        return parent.adapter(action)
+                    def guard(action, now):
+                        parent.guard(action, now)
+                        if mode == 'stop':
+                            seconds[0] += 1
+                            raise ValueError('stopped')
+                    def checkpoint():
+                        checkpoints.append(1)
+                        seconds[0] += 5
+                        if mode == 'export_failure': raise OSError('synthetic export failure')
+                        return {'ok':True}
+                    controller = r.Runner(root, 'run-test', adapter=adapter,
+                        hooks=replace(parent.hooks(), guard=guard, checkpoint=checkpoint),
+                        monotonic=lambda:seconds[0])
+                    result = controller.execute(clock=lambda:NOW+timedelta(seconds=seconds[0]))
+                    summary = spans.summarize([],spans.load(root))
+                    self.assertEqual(summary['wall_run_seconds'],6)
+                    self.assertEqual(summary['critical_path_active_seconds'],6)
+                    self.assertEqual(checkpoints,[1])
+                    self.assertEqual(result[0].kind, r.Kind.PREPARE if mode in {'success','export_failure'} else r.Kind.HANDOFF)
+                    self.assertEqual(parent.calls.count('adapter'),1 if mode in {'success','export_failure'} else 0)
+                    self.assertEqual(controller.export_outcome['ok'],mode != 'export_failure')
+                    if mode == 'export_failure':
+                        self.assertIsNone(w.read(root/'applications/runs/run-test/state.json')['pending'])
+
+    def test_checkpoint_failure_cannot_replace_confirmation_or_replay_submit(self):
+        from dataclasses import replace
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            w.atomic_json(root/'settings.json', {})
+            settings.run_start(root, 'run-test', NOW)
+            parent = Parent(root)
+            parent.target = 1
+            parent.put(job('one', status='ready', prepared={'review_snapshot':parent.ref}))
+            def checkpoint(): raise OSError('synthetic derived export failure')
+            controller = r.Runner(root, 'run-test', hooks=replace(parent.hooks(), checkpoint=checkpoint), adapter=parent.adapter)
+            self.assertEqual(controller.execute(clock=lambda:NOW)[0].kind, r.Kind.SUBMIT)
+            self.assertEqual(controller.export_outcome, {'ok':False, 'status':'failed'})
+            self.assertEqual(parent.get('one')['status'], 'submitted')
+            self.assertEqual(len(parent.get('one')['submissions']), 1)
+            self.assertIsNone(w.read(root/'applications/runs/run-test/state.json')['pending'])
+            self.assertEqual(controller.execute(clock=lambda:NOW)[0].kind, r.Kind.COMPLETE)
+            self.assertEqual(parent.calls.count('adapter'), 1)
+
+    def test_unexpected_workflow_failure_still_checkpoints_and_preserves_exception(self):
+        from dataclasses import replace
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            w.atomic_json(root/'settings.json', {})
+            settings.run_start(root, 'run-test', NOW)
+            parent = Parent(root)
+            calls = []
+            def queue(*args): raise ValueError('synthetic queue failure')
+            def checkpoint():
+                calls.append(1)
+                raise OSError('synthetic derived failure')
+            controller = r.Runner(root, 'run-test', hooks=replace(parent.hooks(), queue=queue, checkpoint=checkpoint), adapter=parent.adapter)
+            with self.assertRaisesRegex(ValueError, 'synthetic queue failure'):
+                controller.execute(clock=lambda:NOW)
+            self.assertEqual(calls, [1])
+
 
 if __name__ == "__main__":
     unittest.main()

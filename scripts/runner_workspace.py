@@ -6,9 +6,10 @@ import settings
 import retry_policy
 import budgets
 import metrics
+import spans
 
 
-def build_runner(root, run_id, brief_file, adapter=None, *, monotonic=None):
+def build_runner(root, run_id, brief_file, adapter=None, *, monotonic=None, defer_exports=False):
     import workspace as w
     root = Path(root).resolve()
     brief_file = Path(brief_file)
@@ -26,10 +27,12 @@ def build_runner(root, run_id, brief_file, adapter=None, *, monotonic=None):
             raise ValueError("runner_batch_brief_invalid") from None
         if not isinstance(brief, dict) or set(brief) - {"schema_version", "batch_id", "target", "category_targets"}:
             raise ValueError("runner_batch_brief_invalid")
-        changed = w.requeue_answers(root, now)
-        if changed["updates"]:
-            w.finish_mutation(root, {"requeued": len(changed["updates"])}, deferred=True)
-        return Queue(w.records(root), brief["batch_id"], brief["target"], brief.get("category_targets"))
+        with w.planning_snapshot(root):
+            snapshot = w.records(root)
+            changed = w.requeue_answers(root, now, record_snapshot=snapshot)
+            if changed["updates"]:
+                w.finish_mutation(root, {"requeued": len(changed["updates"])}, deferred=True)
+            return Queue(w.records(root), brief["batch_id"], brief["target"], brief.get("category_targets"))
 
     def recover(identity, now):
         result = w.recover_submit(root, now)
@@ -39,6 +42,7 @@ def build_runner(root, run_id, brief_file, adapter=None, *, monotonic=None):
     def record(action):
         return w.read(root / action.record_ref)
 
+    @spans.measured("resume_resolution")
     def current_resume(saved, now):
         scope = (saved.get("prepared") or {}).get("scope") or settings.load_settings(root)["resume_scope"]
         if not scope:
@@ -133,5 +137,14 @@ def build_runner(root, run_id, brief_file, adapter=None, *, monotonic=None):
             return None
         return metrics.known_answer_reuse(w.read(private_file(snapshot["answers_path"])))
 
-    hooks = Hooks(lambda: w.writer(root), recover, queue, guard, begin, verify, failure, answer_reuse)
+    def checkpoint():
+        if defer_exports:
+            return {"ok": None, "status": "deferred"}
+        # Existing durable dirty marker owns interruption recovery. Export once
+        # at the bounded execute checkpoint/stop, never replay the mutation.
+        if w.export_state(root)["dirty"]:
+            return w.recover(root, w.export_csv)
+        return {"ok": True, "status": "unchanged"}
+
+    hooks = Hooks(lambda: w.writer(root), recover, queue, guard, begin, verify, failure, answer_reuse, checkpoint)
     return Runner(root, run_id, hooks=hooks, adapter=adapter, monotonic=monotonic)

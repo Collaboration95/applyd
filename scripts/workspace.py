@@ -15,6 +15,9 @@ import unicodedata
 import zipfile
 import sys
 from contextlib import contextmanager
+from contextvars import ContextVar
+from copy import deepcopy
+import spans
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -63,6 +66,8 @@ MAX_RETRIES = 3
 
 
 def read(path):
+    if path.name == "record.json":
+        spans.count("record_reads")
     return json.loads(path.read_text())
 
 
@@ -71,6 +76,9 @@ def digest(path):
 
 
 def atomic_json(path, value):
+    snapshot = _PLANNING.get()
+    if snapshot is not None and path.name == "record.json" and path.resolve().is_relative_to(snapshot["root"] / "applications/records"):
+        snapshot["records"] = None
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=".write-", dir=path.parent)
     try:
@@ -253,8 +261,29 @@ def release(root, args, now):
     return {"id": release_id, "path": str(target), "replaces": item["supersedes"]}
 
 
+_PLANNING = ContextVar("applyd_locked_planning", default=None)
+
+
+@contextmanager
+def planning_snapshot(root):
+    """Caller MUST hold writer; lifetime is one planning callback, never actions."""
+    token = _PLANNING.set({"root": root.resolve(), "records": None})
+    try:
+        yield
+    finally:
+        _PLANNING.reset(token)
+
+
 def records(root):
-    return [read(p) for p in sorted((root / "applications/records").glob("*/record.json"))]
+    snapshot = _PLANNING.get()
+    if snapshot is not None and snapshot["root"] == root.resolve() and snapshot["records"] is not None:
+        return deepcopy(snapshot["records"])
+    with spans.span("context_loading"):
+        spans.count("record_reads", 0)
+        result = [read(p) for p in sorted((root / "applications/records").glob("*/record.json"))]
+    if snapshot is not None and snapshot["root"] == root.resolve():
+        snapshot["records"] = deepcopy(result)
+    return result
 
 
 def work_guard(root, run_id, now, command):
@@ -350,6 +379,7 @@ def browser_retry_guard(root, now):
         raise ValueError("retry_browser_stopped: explicit retry-resume evidence required")
 
 
+@spans.measured("persistence")
 def persist_record(root, record):
     # Leave a durable recovery marker even if interrupted between record,
     # index and exports. The CLI holds its writer lock for the whole operation.
@@ -510,6 +540,7 @@ def listing_decision(root, record, now):
     return {"decision": decision, "reason_codes": sorted({code for d in decisions for code in d["reason_codes"]})}
 
 
+@spans.measured("eligibility")
 def require_eligible(root, record, now):
     decision = listing_decision(root, record, now)
     if decision["decision"] != "eligible":
@@ -517,6 +548,7 @@ def require_eligible(root, record, now):
     return decision
 
 
+@spans.measured("preflight")
 def preflight(root, record, now):
     work_guard(root, record.get("run_id"), now, "preflight")
     if record.get("application_id"):
@@ -555,6 +587,7 @@ def preflight(root, record, now):
     return {"application_id": record["application_id"], "ready": True, "resume_id": current["id"]}
 
 
+@spans.measured("submission")
 def begin_submit(root, application_id, observed_url, session_id, now, deferred=False):
     """Reserve the browser and persist uncertainty before authorizing one click."""
     record_path = root / "applications/records" / slug(application_id) / "record.json"
@@ -613,6 +646,7 @@ def recover_submit(root, now):
     return {"recovered": True, "application_id": claim["application_id"], "requires_reconciliation": True}
 
 
+@spans.measured("listing_capture")
 def capture(root, data, now, deferred=False):
     work_guard(root, data.get("run_id") if isinstance(data, dict) else None, now, "capture")
     data = normalize_listing_contacts(data, now)
@@ -657,6 +691,7 @@ def capture(root, data, now, deferred=False):
     return finish_mutation(root, {"application_id": application_id, "record": str(directory / "record.json"), "duplicate": False, "status": status, "reason": reason}, deferred)
 
 
+@spans.measured("answer_resolution")
 def prepare_answers(root, application_id, questions, now, deferred=False):
     path = root / "applications/records" / slug(application_id) / "record.json"
     record = read(path)
@@ -676,7 +711,7 @@ def prepare_answers(root, application_id, questions, now, deferred=False):
     return save_retry_record(root, record, prepared, deferred)
 
 
-def requeue_answers(root, now):
+def requeue_answers(root, now, *, record_snapshot=None):
     def resume_check(root, record, now):
         scope = record.get("prepared", {}).get("scope") or settings.load_settings(root)["resume_scope"]
         if not scope:
@@ -685,7 +720,7 @@ def requeue_answers(root, now):
         return True
     def eligible(root, record, now):
         return listing_decision(root, record, now)["decision"] == "eligible"
-    result = answer_core.requeue(root, now, resume_check=resume_check, eligibility_check=eligible)
+    result = answer_core.requeue(root, now, resume_check=resume_check, eligibility_check=eligible, record_snapshot=record_snapshot)
     runnable, waiting = [], []
     for update in result["updates"] + result["waiting"]:
         path = root / "applications/records" / update["application_id"] / "record.json"
@@ -717,6 +752,7 @@ def requeue_answers(root, now):
     return result
 
 
+@spans.measured("review")
 def review_form(root, application_id, visible, now, deferred=False):
     path = root / "applications/records" / slug(application_id) / "record.json"
     record = read(path)
@@ -876,6 +912,7 @@ def event(root, args, now, deferred=False):
     return finish_mutation(root, {"application_id": args.id, "status": status}, deferred)
 
 
+@spans.measured("export", counters={"exports": 1})
 def export_csv(root, snapshot=None):
     snapshot = records(root) if snapshot is None else list(snapshot)
     fields = ["contacts", "application_id", "company", "role", "location", "platform", "platform_job_id",
@@ -1134,7 +1171,7 @@ def main():
         now = datetime.now(ZoneInfo(policy["timezone"]))
         if args.command in {"next-action", "run"}:
             from runner_workspace import build_runner
-            controller = build_runner(root, args.run_id, args.batch)
+            controller = build_runner(root, args.run_id, args.batch, defer_exports=args.defer_export)
             if args.command == "next-action":
                 result = controller.plan_next(now).as_dict()
             else:
@@ -1281,13 +1318,15 @@ def main():
                 result = confirm_manual_send(root, args.id, args.follow_up_id, occurred_at=args.at, recorded_at=now, evidence=args.evidence, deferred=args.defer_export)
             elif args.command == "metrics":
                 from metrics import load_events, summarize
-                result = summarize(records(root), load_events(root))
+                snapshot = records(root)
+                result = summarize(snapshot, load_events(root))
+                result["spans"] = spans.summarize(snapshot, spans.load(root))
             elif args.command == "report":
                 week = now.date().isoformat() if args.week == "current" else args.week
                 if args.week == "current":
                     week = (now.date() - timedelta(days=now.weekday())).isoformat()
                 from metrics import load_events
-                result = reports.weekly_report(records(root), week, now=now, timezone=policy["timezone"], shareable=args.shareable, metrics=load_events(root))
+                result = reports.weekly_report(records(root), week, now=now, timezone=policy["timezone"], shareable=args.shareable, metrics=load_events(root), spans=spans.load(root))
             elif args.command == "mail-sync":
                 result = mail_import.sync_local(root, mail_import.read_export(args.file) if args.file else None, now)
                 if result["status"] == "synced":

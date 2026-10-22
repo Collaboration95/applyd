@@ -12,7 +12,7 @@ Reservation time is recorded with the Asia/Singapore offset for period selection
 never for calculating duration. A reservation consumes its sequence even after
 failure, refusal or reconciliation; planning alone creates no event.
 
-Only the adapter invocation is timed with `time.monotonic`. Guards, submit
+In the compatible v1 action ledger, only the adapter invocation is timed with `time.monotonic`. Guards, submit
 identity/authorization checks, persistence, verification, manual waiting and
 shared discovery allocation are outside individual application effort. A normal
 exception has a measured duration and a fixed failure reason; exception text is
@@ -123,3 +123,14 @@ Focused verification uses synthetic temporary workspaces only:
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p test_metrics.py -v
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p test_reports.py -v
 ```
+
+## Version 2 workflow spans
+
+The runner additionally writes private versioned correlated spans around its
+actual helper and adapter boundaries. `workspace.py metrics` and JSON weekly
+reports include aggregate `spans`. See [efficiency](efficiency.md) for the live
+Python/JS adapter contract, monotonic clocks, interrupted/restarted work,
+non-overlapping active time, per-process effort, wait/overhead separation,
+quantiles, evidence-backed rates, partial coverage and output-token measurements.
+Historical telemetry is never reconstructed. Raw spans and asset mappings remain
+private. The reproducible baseline is entirely synthetic.

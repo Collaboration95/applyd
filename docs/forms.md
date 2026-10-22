@@ -12,9 +12,9 @@ as a browser script exposes `globalThis.ApplydForms`. Both export exactly:
 ```js
 plan({ observation, approved, bindings, resume = null })
 // Synchronous: {status: 'planned', snapshot_id, scope, actions}, or handoff.
-execute(preparedPlan, adapter, { guard, resumeResolver })
+execute(preparedPlan, adapter, { guard, resumeResolver, resumeVerifier, rememberResume, telemetry })
 // Async: {status: 'verified', snapshot_id, written, observed}, or handoff.
-createDOMAdapter({ getRoot, getScope, upload })
+createDOMAdapter({ getRoot, getScope, upload, selectedResume })
 // {observe(), write(command, expectedScope), canUpload}
 FormError // error.code is a content-free typed reason
 ```
@@ -249,3 +249,9 @@ rows also must stop. No browser verification was performed by the implementation
 sub-agent; the parent owns this manual check and its evidence.
 
 Parent browser verification completed on 2026-10-20 using only the loopback fixture in an incognito collaborative tab. The real DOM adapter independently verified eight native text/number/select/radio/checkbox/history values. With the required upload and no bridge, it returned `upload_adapter_unavailable` before any field write. A separate actual file-chooser selection used synthetic bytes whose browser File SHA-256 matched the local fixture. A changed layout stopped the existing plan with `page_changed`, zero writes and zero field events; replanning old approvals returned `unsupported_form`. The page had no submit controls or external requests. Native bridge identity/hash binding is additionally covered by synthetic Node adapter tests; no authenticated employer browser is claimed.
+
+Verified selected platform assets and matching prefilled values are reused with
+independent readback and reactive-reset protection. See [efficiency](efficiency.md)
+for the private receipt/telemetry boundary, fresh resolver requirements, bounded
+observations and synthetic before/after evidence. A filename alone never enables
+reuse. Live LinkedIn selection inspection still requires a runtime adapter.

@@ -8,12 +8,12 @@ Use synthetic fixtures and stub browser actions when verifying implementation.
 
 1. Start a new run with `python3 scripts/workspace.py run-start --id "$APPLYD_RUN_ID"`; resume an existing ID without resetting its limits.
 2. Before every browser action call `workspace.py browser-guard --run-id "$APPLYD_RUN_ID"` (add `--id <app>` when known). Record observed failures with `retry-failure`; a login/page-change requires evidence-bound `retry-resume`. Read the settings/context output. Run `scripts/seen.sh <identity>...` before opening result cards; use only new or policy-retryable entries.
-3. Screen result-card headers with `workspace.py screen --file <adapter-header.json>` before extraction or destination navigation.
+3. Process bounded LinkedIn Saved cards first. Use `discovery.discover_saved` in the runtime discover adapter to screen transitive known/confirmed/uncertain aliases and current/frozen header exclusions before details; ambiguous headers still need full listing inspection. Screen result-card headers with `workspace.py screen --file <adapter-header.json>` before extraction or destination navigation.
 4. Job facts come only from the current LinkedIn job-page DOM. Evaluate `scripts/extract_linkedin.js` and pipe its exact JSON to `workspace.py capture --stdin --run-id "$APPLYD_RUN_ID"`.
 5. Before every destination navigation, call `workspace.py scope-check --id <app> --url <destination>`. An off_scope refusal ends that job. Do not browse company sites, profiles or other sources for facts.
 6. On an account_safety signal, capture the current page privately and call `workspace.py safety-check --run-id "$APPLYD_RUN_ID" --file <page-snapshot.json> --screenshot <private-reference>`; end the entire run. A STOP/safety refusal also ends the run.
 7. For known native fields use `scripts/form_handlers.js` inside the prepare adapter, with the validated answer snapshot, exact semantic bindings, a live guard and fresh resolver; verify actual readback. Unknown layouts/options stop for agent review; never edit profiles. See `docs/forms.md`. Pass exact observed questions to `workspace.py prepare-answers --id <app> --questions <adapter-questions.json>`. Leave unresolved jobs waiting and continue independent jobs.
-8. Resolve the selected resume immediately before upload: `python3 scripts/resolve_resume.py --scope <configured-scope> --purpose application`.
+8. Reuse a selected LinkedIn resume only through the current release/hash and private exact asset mapping contract in `docs/efficiency.md`; filenames and remembered selection are insufficient. Bind the runtime `resume_assets.Boundary` verification and guarded `selectedResume` observer; otherwise use verified upload or typed handoff. Resolve the selected resume immediately before use/upload: `python3 scripts/resolve_resume.py --scope <configured-scope> --purpose application`.
 9. Freeze the returned answer file with `workspace.py event --id <app> --status ready --resume-scope <scope> --answers <answers-path> --run-id "$APPLYD_RUN_ID"`.
 10. Delegate a read-only second reviewer to observe the current filled form and selected attachment. Pass its independent snapshot to `workspace.py review-form --id <app> --visible <snapshot.json>`; a mismatch blocks submission.
 11. In dry_run mode record `dry_run_complete` without Submit. In save_only mode stop after capture.
@@ -32,3 +32,12 @@ Computer-use fallback (see `docs/computer-use.md`):
 - For upload, pass `resume_resolver` calling the current resolver with `--scope <scope> --purpose application` immediately before upload; a failed current release blocks use without an older-file fallback.
 - Supply genuine before/after screenshots privately under `applications/runs/<run_id>/`; no fabricated or substitute screenshots. Reuse the durable session ID; terminal/interrupted actions are never replayed.
 - Preserve the typed outcome/private record; completed means only widget handling finished. Absent adapter capability returns a blocker. Parent browser QA uses only `tests/fixtures/fallback-form.html` and synthetic files.
+
+Runtime efficiency and timing: wrap live runner adapters with the v2 boundary
+in `docs/efficiency.md` and pass `telemetry.js` to form execution. Measure actual
+browser/model/tool boundaries and explicit waits; leave missing coverage unknown.
+Pass all questions for one form step in one `prepare-answers` batch and reuse only
+scoped current authorized sources. Use `--defer-export` for mutations and the
+existing export-only rebuild once at a bounded checkpoint/stop. Never replay an
+action because telemetry or an export failed. These helpers do not provide a live
+authenticated browser driver and do not resume stopped applications.

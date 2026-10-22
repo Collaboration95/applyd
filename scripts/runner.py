@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 import batches
 import budgets
 import metrics
+import spans
 import retry_policy
 import settings
 
@@ -86,6 +87,7 @@ class Hooks:
     verify: Callable[[Action, Observation | None, datetime], Verification]
     failure: Callable[[Action, retry_policy.Reason, datetime], None]
     answer_reuse: Callable[[Action], int | None] | None = None
+    checkpoint: Callable[[], dict] | None = None
 
 
 class Runner:
@@ -95,6 +97,8 @@ class Runner:
         self.root = Path(root).resolve()
         self.run_id, self.hooks, self.adapter = run_id, hooks, adapter
         self.monotonic = monotonic if monotonic is not None else time.monotonic
+        self.telemetry = spans.Recorder(self.root, run_id)
+        self.export_outcome = None
         self.state_ref = f"applications/runs/{run_id}/state.json"
 
     def _path(self, ref):
@@ -154,6 +158,7 @@ class Runner:
             raise ValueError("Invalid saved runner action identity")
         return action
 
+    @spans.measured("persistence")
     def _save(self, state):
         # Runner checkpoints stay separate from budget.json and immutable run.json.
         from workspace import atomic_json
@@ -180,7 +185,8 @@ class Runner:
 
     def _boundary(self, state, action, now, *, begun=False):
         """Fresh policy/accounting after the mandatory guard, before any call."""
-        queue = self.hooks.queue(self.run_id, now)
+        with spans.span("context_loading"):
+            queue = self.hooks.queue(self.run_id, now)
         current, frozen, _, _, _, reason = self._policy(state, queue, now)
         if reason:
             raise budgets.BudgetStop(reason)
@@ -244,7 +250,8 @@ class Runner:
         return current, frozen, groups, progress, remaining, reason
 
     def _verified(self, state, action, observation, now):
-        verdict = self.hooks.verify(action, observation, now)
+        with spans.span("confirmation" if action.kind == Kind.SUBMIT else "form_readback"):
+            verdict = self.hooks.verify(action, observation, now)
         if not isinstance(verdict, Verification) or verdict.disposition not in {"verified", "not_executed", "unresolved"}:
             raise ValueError("Invalid runner verification")
         if verdict.disposition == "unresolved":
@@ -254,7 +261,8 @@ class Runner:
         if not path.is_file() or path.stat().st_size == 0:
             raise ValueError("Runner verification requires saved nonempty evidence")
         if verdict.disposition == "verified" and action.kind == Kind.SUBMIT:
-            queue = self.hooks.queue(self.run_id, now)
+            with spans.span("context_loading"):
+                queue = self.hooks.queue(self.run_id, now)
             progress = batches.batch_progress(queue.records, queue.batch_id, queue.target, queue.category_targets)
             if action.application_id not in progress["exclusions"]["confirmed"]:
                 raise ValueError("Submit verification requires a durable confirmation")
@@ -273,7 +281,8 @@ class Runner:
         state = self._load()
         # Recover existing browser claims before considering ANY further work.
         # Historical verification is allowed even when new-work gates now refuse.
-        self.hooks.recover(self.run_id, now)
+        with spans.span("startup"):
+            self.hooks.recover(self.run_id, now)
         if state["pending"] is not None:
             pending = self._action(state["pending"]["action"])
             try:
@@ -283,7 +292,8 @@ class Runner:
             if verified == "unresolved":
                 return state, self._new(state, Kind.HANDOFF, pending.application_id,
                     reason="submission_uncertain" if pending.kind == Kind.SUBMIT else "unverified_action")
-        queue = self.hooks.queue(self.run_id, now)
+        with spans.span("context_loading"):
+            queue = self.hooks.queue(self.run_id, now)
         current, frozen, groups, progress, remaining, reason = self._policy(state, queue, now)
         try:
             self._budget(state, current, frozen)
@@ -371,9 +381,15 @@ class Runner:
             if self.hooks is None:
                 results.append(Action(Kind.HANDOFF, self.run_id, 1, reason="callbacks_missing"))
                 break
-            with self.hooks.writer():
+            self.telemetry.wall = clock
+            self.telemetry.application_id = self.telemetry.attempt_id = self.telemetry.action_id = None
+            with self.hooks.writer(), self.telemetry.span("workflow", "orchestration"):
                 state, action = self._next(now)
+                self.telemetry.correlate(action)
                 if action.kind in {Kind.COMPLETE, Kind.HANDOFF}:
+                    if action.kind == Kind.HANDOFF:
+                        with spans.span("handoff") as row:
+                            if row is not None: row["outcome"] = "handoff"
                     results.append(action)
                     break
                 if self.adapter is None:
@@ -385,8 +401,9 @@ class Runner:
                     # Mandatory parent checks include safety/session retry,
                     # eligibility, resume/answer freshness and policy/identity.
                     now = batches.validate_event_time(clock())
-                    if self.hooks.guard(action, now) is not None:
-                        raise ValueError("Runner guard must explicitly succeed with None")
+                    with spans.span("preflight"):
+                        if self.hooks.guard(action, now) is not None:
+                            raise ValueError("Runner guard must explicitly succeed with None")
                     # The guard can take time or tighten settings. Submit gets a
                     # fresh deadline/quota/retry/budget check before its claim.
                     now = batches.validate_event_time(clock())
@@ -414,8 +431,10 @@ class Runner:
                     self._metric(metrics.reserve, self.root, self.run_id, action.sequence, action.kind.value,
                         action.application_id, now, retry_reason=retry_reason if retry_count else None,
                         retry_count=retry_count)
-                    if action.kind == Kind.SUBMIT and self.hooks.begin_submit(action, now) is not True:
-                        raise ValueError("Submit was not authorized")
+                    if action.kind == Kind.SUBMIT:
+                        with spans.span("preflight"):
+                            if self.hooks.begin_submit(action, now) is not True:
+                                raise ValueError("Submit was not authorized")
                     if action.kind == Kind.SUBMIT:
                         # Observing/claiming Submit may take time. Refuse a late
                         # click but retain the claim/pending for reconciliation.
@@ -423,7 +442,12 @@ class Runner:
                         self._boundary(state, action, now, begun=True)
                     started = self.monotonic()
                     try:
-                        observation = self.adapter(action)
+                        self.telemetry.correlate(action, ((record or {}).get("prepared") or {}).get("attempt_id"))
+                        if retry_count:
+                            with spans.span("retry", counters={"retries": 1}):
+                                observation = spans.LiveAdapter(self.adapter)(action)
+                        else:
+                            observation = spans.LiveAdapter(self.adapter)(action)
                     except Exception:
                         self._metric(metrics.observe, self.root, self.run_id, action.sequence,
                             self.monotonic() - started, failure_reason=reason.value, failed=True)
@@ -461,4 +485,7 @@ class Runner:
                     "unverified_action" if verified == "unresolved" else "not_executed"))
                 if verified != "verified":
                     break
+        if self.hooks is not None and self.hooks.checkpoint is not None:
+            with self.hooks.writer(), self.telemetry.span("export"):
+                self.export_outcome = self.hooks.checkpoint()
         return results

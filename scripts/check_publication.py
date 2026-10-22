@@ -41,6 +41,8 @@ GENERIC_FILES = frozenset({
     "scripts/runner.py", "scripts/runner_workspace.py", "docs/runner.md",
     "scripts/budgets.py", "docs/budgets.md",
     "scripts/schedule_run.py", "docs/schedule.md",
+    "scripts/resume_assets.py", "scripts/spans.py", "scripts/telemetry.js", "scripts/discovery.py",
+    "scripts/synthetic_baseline.py", "docs/efficiency.md", "docs/synthetic-baseline.json",
     "scripts/metrics.py", "scripts/reports.py", "docs/metrics.md", "docs/reports.md",
     "scripts/form_handlers.js", "docs/forms.md", "tests/fixtures/application-form.html",
     "scripts/outreach.py", "scripts/outreach_workspace.py", "docs/outreach.md", ".claude/skills/outreach/SKILL.md",

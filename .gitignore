@@ -264,3 +264,14 @@ __pycache__/
 !/scripts/schedule_run.py
 !/docs/schedule.md
 !/tests/test_schedule_run.py
+
+# Audited generic efficiency helpers, private-ledger contracts and synthetic evidence.
+!/scripts/resume_assets.py
+!/scripts/spans.py
+!/scripts/telemetry.js
+!/scripts/discovery.py
+!/scripts/synthetic_baseline.py
+!/tests/test_efficiency.py
+!/tests/telemetry.test.cjs
+!/docs/efficiency.md
+!/docs/synthetic-baseline.json

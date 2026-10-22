@@ -411,3 +411,79 @@ test('changed fixture layout and custom widgets stop; parent fixture has no subm
   assert.match(html, /connect-src 'none'/); assert.match(html, /form-action 'none'/);
   assert.doesNotMatch(html, /<form\b|type=["']submit["']|<button\b|<iframe\b|<link\b|\b(?:src|action)\s*=/i);
 });
+
+test('all matching prefilled fields and verified LinkedIn asset perform zero writes/uploads/path operations', async () => {
+  const { input } = await scenario(), fake = memory(input);
+  const asset = { account_id: 'synthetic-account', asset_id: 'opaque-asset', revision: '1' };
+  for (const action of forms.plan(input).actions) {
+    const field = fake.state.fields.find(f => f.field_id === action.field_id);
+    field.valid = true;
+    if (action.kind === 'upload_resume') { field.value = null; field.platform_asset = asset; }
+    else field.value = action.value;
+  }
+  fake.adapter.canUpload = false;
+  let reads = 0, verified = 0;
+  const observe = fake.adapter.observe;
+  fake.adapter.observe = () => { reads++; return observe(); };
+  const result = await forms.execute(forms.plan(input), fake.adapter, { ...options,
+    resumeVerifier: ({ asset: actual, resume: expected }) => {
+      assert.deepEqual(actual, asset); assert.deepEqual(expected, resume); verified++; return true;
+    } });
+  assert.equal(result.status, 'verified'); assert.deepEqual(fake.writes, []);
+  assert.equal(result.skipped.length, 9); assert.equal(reads, 2); assert.ok(verified > 0);
+});
+
+test('unmapped or changed selected asset falls back to upload, or typed handoff without bridge', async () => {
+  for (const hasBridge of [true, false]) {
+    const { input } = await scenario(), fake = memory(input);
+    fake.state.fields.find(f => f.type === 'file').platform_asset = { account_id: 'a', asset_id: 'changed', revision: '2' };
+    fake.adapter.canUpload = hasBridge;
+    const write = fake.adapter.write;
+    fake.adapter.write = async (...args) => {
+      await write(...args);
+      if (args[0].kind === 'upload_resume') delete fake.state.fields.find(f => f.type === 'file').platform_asset;
+    };
+    const result = await forms.execute(forms.plan(input), fake.adapter, { ...options, resumeVerifier: () => false });
+    assert.equal(result.status, hasBridge ? 'verified' : 'handoff');
+    assert.equal(fake.writes.includes('resume'), hasBridge);
+    if (!hasBridge) assert.deepEqual(fake.writes, []);
+  }
+});
+
+test('a later write resetting a skipped prefilled value is detected; observations are bounded', async () => {
+  const { input } = await scenario(), fake = memory(input);
+  const first = forms.plan(input).actions[0]; fake.state.fields[0].value = first.value; fake.state.fields[0].valid = true;
+  const write = fake.adapter.write;
+  let reads = 0; const observe = fake.adapter.observe;
+  fake.adapter.observe = () => { reads++; return observe(); };
+  fake.adapter.write = async (...args) => { await write(...args); fake.state.fields[0].value = 'reset'; };
+  const result = await forms.execute(forms.plan(input), fake.adapter, options);
+  assert.equal(result.reason, 'verification_failed'); assert.equal(fake.writes.length, 1); assert.equal(reads, 2);
+});
+
+test('selected platform asset is independently observed through concrete DOM adapter', async () => {
+  const doc = parse(); doc.location.href = 'https://www.linkedin.com/jobs/view/123';
+  const asset = { account_id: 'synthetic', asset_id: 'opaque', revision: '1' };
+  const adapter = forms.createDOMAdapter({ getRoot: () => doc.getElementById('application-dialog'),
+    getScope: () => ({ application_id: 'app-synthetic', tab_id: 'tab', kind: 'easy_apply', url: doc.location.href }),
+    selectedResume: () => asset });
+  const input = inputFor(await adapter.observe());
+  const result = await forms.execute(forms.plan(input), adapter, { ...options, resumeVerifier: ({asset: actual}) => equalAsset(actual) });
+  function equalAsset(actual) { assert.deepEqual(actual, asset); return true; }
+  assert.equal(result.status, 'verified'); assert.equal(result.written.includes('resume'), false);
+});
+
+test('fresh guard blocks a changed approval/STOP before mismatch write or skipped-field final read', async () => {
+  const { input } = await scenario(), fake = memory(input);
+  let checks=0;
+  const result=await forms.execute(forms.plan(input),fake.adapter,{...options,guard:phase=>{checks++;return phase!=='write';}});
+  assert.equal(result.reason,'guard_refused');assert.deepEqual(fake.writes,[]);assert.ok(checks>1);
+});
+
+test('async selected-asset observation cannot hide a concurrent field reset', async () => {
+  const doc=parse();let read=0;
+  const adapter=forms.createDOMAdapter({getRoot:()=>doc.getElementById('application-dialog'),
+    getScope:()=>({application_id:'app-synthetic',tab_id:'tab',kind:'synthetic_application',url:doc.location.href}),
+    selectedResume:async()=>{read++;doc.getElementById('full-name').value='Actual reactive value';return {account_id:'synthetic',asset_id:'opaque',revision:'1'};}});
+  const observed=await adapter.observe();assert.equal(observed.fields[0].value,'Actual reactive value');assert.equal(read,1);
+});

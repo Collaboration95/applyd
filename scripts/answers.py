@@ -626,7 +626,7 @@ def import_answers(root, change, now, *, preview=False):
     return result
 
 
-def requeue(root, now, *, resume_check=None, eligibility_check=None):
+def requeue(root, now, *, resume_check=None, eligibility_check=None, record_snapshot=None):
     """Propose runnable jobs only after ALL blockers and execution gates pass.
 
     Checks take (root, record, now) and must return True. No callbacks means no
@@ -636,7 +636,7 @@ def requeue(root, now, *, resume_check=None, eligibility_check=None):
     now = _time(now)
     bank, inbox = _load_bank(root), _inbox(root)
     updates, waiting, untouched = [], [], []
-    for record in _records(root):
+    for record in (_records(root) if record_snapshot is None else record_snapshot):
         app = record["application_id"]
         if record.get("status") != "awaiting_answer" or record.get("submissions"):
             untouched.append(app)

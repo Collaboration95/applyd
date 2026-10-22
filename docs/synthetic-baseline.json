@@ -1,0 +1,54 @@
+{
+  "after": {
+    "exports": 1,
+    "field_writes": 1,
+    "observations": 3,
+    "path_entries": 0,
+    "record_snapshot_reads": 2,
+    "seconds": 0.9,
+    "skipped_fields": 2,
+    "telemetry_emissions": 0,
+    "uploads": 0
+  },
+  "after_form_latency": {
+    "median_seconds": 0.9,
+    "p95_seconds": 0.9,
+    "samples": 1
+  },
+  "before": {
+    "exports": 3,
+    "field_writes": 3,
+    "observations": 10,
+    "path_entries": 1,
+    "record_snapshot_reads": 6,
+    "seconds": 3.8,
+    "skipped_fields": 0,
+    "telemetry_emissions": 0,
+    "uploads": 1
+  },
+  "before_form_latency": {
+    "median_seconds": 3.8,
+    "p95_seconds": 3.8,
+    "samples": 1
+  },
+  "clock": "fake; observation=0.2s, field_write=0.3s, upload_and_path=0.9s, telemetry_emit=0.001s",
+  "confirmation_evidence": "none; no submit operation exists in this fixture",
+  "confirmations_per_measured_active_hour": 0,
+  "confirmations_per_wall_hour": 0,
+  "fixture": "synthetic-four-field-one-mismatch-v1",
+  "instrumentation_emissions": 24,
+  "instrumentation_overhead_seconds": 0.024,
+  "latency_samples_per_variant": 1,
+  "latency_scope": "form-step only; record/export counts are separate untimed actual calls",
+  "live_speedup": null,
+  "model_configuration": "none; no model calls in either variant",
+  "schema_version": 1,
+  "throughput_denominators": {
+    "after_measured_active_seconds": 0.9,
+    "after_wall_seconds": 0.9,
+    "before_measured_active_seconds": 3.8,
+    "before_wall_seconds": 3.8
+  },
+  "time_to_first_confirmation_seconds": null,
+  "unique_confirmations": 0
+}

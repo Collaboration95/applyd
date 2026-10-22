@@ -272,7 +272,7 @@ def _shareable(report):
     return result
 
 
-def weekly_report(records, week, now=None, timezone="UTC", pending_questions=None, shareable=False, metrics=None):
+def weekly_report(records, week, now=None, timezone="UTC", pending_questions=None, shareable=False, metrics=None, spans=None):
     """Build a deterministic report for an ISO week from caller-supplied records.
 
     Application volume is the unique set with a confirmation occurrence in the
@@ -284,6 +284,7 @@ def weekly_report(records, week, now=None, timezone="UTC", pending_questions=Non
     if any(not isinstance(record, dict) for record in records):
         raise ValueError("records must contain application objects")
     start, end, zone, current = _week_bounds(week, now, timezone)
+    span_rows = list(spans) if spans is not None else None
     metrics = list(metrics) if metrics is not None else None
     measurement = telemetry.summarize(records, metrics, start=start, end=end) if metrics is not None else None
     local_start, local_end = start.isoformat(), end.isoformat()
@@ -355,6 +356,9 @@ def weekly_report(records, week, now=None, timezone="UTC", pending_questions=Non
     }
     if measurement is not None:
         report["metrics"] = measurement
+    if span_rows is not None:
+        import spans as span_metrics
+        report["spans"] = span_metrics.summarize(records, span_rows, start=start, end=end)
     return _shareable(report) if shareable else report
 
 

@@ -158,8 +158,8 @@
     return equal(field.value, action.value) && field.valid !== false;
   }
   /** Execute only plans minted by this module instance. No retry after a write. */
-  async function execute(prepared, adapter, { guard, resumeResolver } = {}) {
-    const entry = plans.get(prepared), written = [];
+  async function execute(prepared, adapter, { guard, resumeResolver, resumeVerifier, rememberResume, telemetry } = {}) {
+    const entry = plans.get(prepared), written = [], verified = [], skipped = [];
     const kind = prepared?.scope?.kind;
     if (!entry) return handoff('invalid_plan', kind);
     if (!adapter || typeof adapter.observe !== 'function' || typeof adapter.write !== 'function') return handoff('adapter_unavailable', kind);
@@ -168,15 +168,15 @@
     // Once observation begins the plan is single-use; reobserve and replan.
     plans.delete(prepared);
     let observed = null;
-    async function guarded(phase, fn) {
+    async function guarded(phase, fn, measurement = {}) {
       let allowed = false;
       try { allowed = await guard(phase); } catch { fail('guard_refused'); }
       if (allowed !== true) fail('guard_refused');
-      return fn();
+      return telemetry ? telemetry.call(measurement.phase || (phase === 'observe' ? 'form_observation' : phase === 'write' ? 'form_filling' : phase === 'verify_resume' ? 'resume_reuse' : 'resume_resolution'), phase === 'write' || phase === 'observe' ? 'browser' : 'tool', fn, { counters: measurement.counters || {} }) : fn();
     }
     async function observe() {
       // No approved values or expected snapshot is passed to the reader.
-      observed = await guarded('observe', () => adapter.observe());
+      observed = await guarded('observe', () => adapter.observe(), { counters: { observations: 1 } });
       checkObservation(observed);
       if (layout(observed) !== layout(entry.observation)) fail('page_changed');
       return observed;
@@ -188,33 +188,55 @@
       if (!equal(selection, action.resume)) fail('resume_changed');
     }
     try {
-      await observe();
-      for (const action of entry.actions) if (action.kind === 'upload_resume') {
-        if (adapter.canUpload !== true) fail('upload_adapter_unavailable');
-        await resolve(action);
+      let current = await observe();
+      // Resolve before any writes, even if the platform already has an attachment.
+      for (const action of entry.actions) if (action.kind === 'upload_resume') await resolve(action);
+      async function attachmentMatches(field, action) {
+        if (field.valid === false) return false;
+        if (field.platform_asset) {
+          return typeof resumeVerifier === 'function' &&
+            await guarded('verify_resume', () => resumeVerifier({ asset: copy(field.platform_asset), resume: copy(action.resume) })) === true;
+        }
+        return matches(field, action);
+      }
+      async function verifiedMatch(view, action) {
+        const field = view.fields.find(item => item.field_id === action.field_id);
+        return action.kind === 'upload_resume' ? attachmentMatches(field, action) : matches(field, action);
+      }
+      // Refuse a missing upload bridge before writing unrelated fields.
+      for (const action of entry.actions.filter(item => item.kind === 'upload_resume')) {
+        if (!await verifiedMatch(current, action) && adapter.canUpload !== true) fail('upload_adapter_unavailable');
       }
       for (const action of entry.actions) {
-        const current = await observe();
-        // Recheck all earlier writes before progressing, including reactive resets.
-        for (const id of written) {
-          const previous = entry.actions.find(item => item.field_id === id);
-          if (!matches(current.fields.find(field => field.field_id === id), previous)) fail('verification_failed');
+        // current is the previous independent readback: no redundant outer read.
+        for (const id of verified) {
+          if (!await verifiedMatch(current, entry.actions.find(item => item.field_id === id))) fail('verification_failed');
         }
         if (action.kind === 'upload_resume') await resolve(action);
-        const command = freeze({ ...copy(action), expected_layout: layout(entry.observation) });
-        commands.add(command);
-        // Reserve before the adapter boundary. Failures may have partially written.
-        try { await guarded('write', () => {
-          written.push(action.field_id);
-          return adapter.write(command, prepared.scope);
-        }); }
-        finally { commands.delete(command); }
-        const after = await observe();
-        if (!matches(after.fields.find(field => field.field_id === action.field_id), action)) fail('verification_failed');
+        if (await verifiedMatch(current, action)) {
+          skipped.push(action.field_id);
+          if (telemetry) await telemetry.call(action.kind === 'upload_resume' ? 'resume_reuse' : 'form_readback', 'tool', async () => true, { counters: action.kind === 'upload_resume' ? { uploads: 0 } : { skipped_fields: 1, field_writes: 0 } });
+        } else {
+          const command = freeze({ ...copy(action), expected_layout: layout(entry.observation) });
+          commands.add(command);
+          try { await guarded('write', () => {
+            written.push(action.field_id);
+            return adapter.write(command, prepared.scope);
+          }, { phase: action.kind === 'upload_resume' ? 'resume_upload' : 'form_filling', counters: action.kind === 'upload_resume' ? { uploads: 1 } : { field_writes: 1 } }); } finally { commands.delete(command); }
+          current = await observe();
+          // A verified upload may establish a private platform receipt only from
+          // independent byte/hash readback, before trusting the selected asset.
+          const field = current.fields.find(item => item.field_id === action.field_id);
+          if (action.kind === 'upload_resume' && field.platform_asset && matches(field, action) && typeof rememberResume === 'function') {
+            await guarded('verify_resume', () => rememberResume({ asset: copy(field.platform_asset), resume: copy(action.resume) }));
+          }
+          if (!await verifiedMatch(current, action)) fail('verification_failed');
+        }
+        verified.push(action.field_id);
       }
       const final = await observe();
-      if (!entry.actions.every(action => matches(final.fields.find(field => field.field_id === action.field_id), action))) fail('verification_failed');
-      return freeze({ status: 'verified', snapshot_id: prepared.snapshot_id, written,
+      for (const action of entry.actions) if (!await verifiedMatch(final, action)) fail('verification_failed');
+      return freeze({ status: 'verified', snapshot_id: prepared.snapshot_id, written, skipped, verified,
         observed: copy(final) });
     } catch (error) {
       // Content-free reasons: raw adapter errors can contain private data.
@@ -225,7 +247,7 @@
 
   /** Native DOM adapter. Parent supplies the CURRENT dialog and actual tab scope.
    * upload({input,resume}) is a trusted native file chooser bridge, never a URL. */
-  function createDOMAdapter({ getRoot, getScope, upload } = {}) {
+  function createDOMAdapter({ getRoot, getScope, upload, selectedResume } = {}) {
     const receipts = new WeakMap();
     const token = node => {
       if (!nodeTokens.has(node)) nodeTokens.set(node, `node-${++nodeCounter}`);
@@ -331,6 +353,27 @@
       for (const [id, { input, file }] of files) {
         if (input.files.length !== (file ? 1 : 0) || input.files[0] !== file) fail('page_changed');
         current.fields.find(field => field.field_id === id).value = observation.fields.find(field => field.field_id === id).value;
+      }
+      if (typeof selectedResume === 'function') {
+        for (const field of current.fields.filter(item => item.type === 'file')) {
+          const asset = await selectedResume({ scope: copy(current.scope), field_id: field.field_id });
+          if (asset !== null) {
+            if (!asset || !equal(Object.keys(asset).sort(), ['account_id', 'asset_id', 'revision']) || !['account_id', 'asset_id', 'revision'].every(key => nonempty(asset[key]))) fail('upload_identity_mismatch');
+            field.platform_asset = copy(asset);
+            // Native required-file validity does not describe platform storage.
+            field.valid = true;
+          }
+        }
+        const latest = collect().observation;
+        if (layout(latest) !== layout(current)) fail('page_changed');
+        for (const [id, { input, file }] of files) {
+          if (input.files.length !== (file ? 1 : 0) || input.files[0] !== file) fail('page_changed');
+          const before = current.fields.find(field => field.field_id === id);
+          const after = latest.fields.find(field => field.field_id === id);
+          after.value = before.value;
+          if (before.platform_asset) { after.platform_asset = before.platform_asset; after.valid = true; }
+        }
+        return latest;
       }
       return current;
     }

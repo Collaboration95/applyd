@@ -168,20 +168,25 @@
     // Once observation begins the plan is single-use; reobserve and replan.
     plans.delete(prepared);
     let observed = null;
+    async function checkGuard(phase) {
+      let allowed = false;
+      try { allowed = await guard(phase); } catch { fail('guard_refused'); }
+      if (allowed !== true) fail('guard_refused');
+    }
     async function guarded(phase, fn, measurement = {}) {
       // Reservation persistence may await an external transport. Check fresh
       // authorization after that wait, at the actual operation boundary.
+      const counters = Object.fromEntries(Object.keys(measurement.counters || {}).map(key => [key, 0]));
       const checked = async () => {
-        let allowed = false;
-        try { allowed = await guard(phase); } catch { fail('guard_refused'); }
-        if (allowed !== true) fail('guard_refused');
+        await checkGuard(phase);
+        Object.assign(counters, measurement.counters || {});
         return fn();
       };
-      return telemetry ? telemetry.call(measurement.phase || (phase === 'observe' ? 'form_observation' : phase === 'write' ? 'form_filling' : phase === 'verify_resume' ? 'resume_reuse' : 'resume_resolution'), phase === 'write' || phase === 'observe' ? 'browser' : 'tool', checked, { counters: measurement.counters || {} }) : checked();
+      return telemetry ? telemetry.call(measurement.phase || (phase === 'observe' ? 'form_observation' : phase === 'write' ? 'form_filling' : phase === 'verify_resume' ? 'resume_reuse' : 'resume_resolution'), phase === 'write' || phase === 'observe' ? 'browser' : 'tool', checked, { counters }) : checked();
     }
     async function observe() {
       // No approved values or expected snapshot is passed to the reader.
-      observed = await guarded('observe', () => adapter.observe(), { counters: { observations: 1 } });
+      observed = await guarded('observe', () => typeof adapter.observeGuarded === 'function' ? adapter.observeGuarded(() => checkGuard('observe')) : adapter.observe(), { counters: { observations: 1 } });
       checkObservation(observed);
       if (layout(observed) !== layout(entry.observation)) fail('page_changed');
       return observed;
@@ -335,7 +340,7 @@
       checkObservation(observation);
       return { root, observation, targets };
     }
-    async function observe() {
+    async function observe({ guard } = {}) {
       const { root, observation, targets } = collect();
       const files = new Map();
       for (const field of observation.fields.filter(item => item.type === 'file')) {
@@ -361,6 +366,7 @@
       }
       if (typeof selectedResume === 'function') {
         for (const field of current.fields.filter(item => item.type === 'file')) {
+          if (guard) await guard(); // hashing/previous asset reads can yield to STOP
           const asset = await selectedResume({ scope: copy(current.scope), field_id: field.field_id });
           if (asset !== null) {
             if (!asset || !equal(Object.keys(asset).sort(), ['account_id', 'asset_id', 'revision']) || !['account_id', 'asset_id', 'revision'].every(key => nonempty(asset[key]))) fail('upload_identity_mismatch');
@@ -418,7 +424,8 @@
         node.dispatchEvent(new view.Event('change', { bubbles: true }));
       }
     }
-    return Object.freeze({ observe, write, canUpload: typeof upload === 'function' });
+    return Object.freeze({ observe: () => observe(), observeGuarded: guard => observe({ guard }),
+      write, canUpload: typeof upload === 'function' });
   }
   return Object.freeze({ plan, execute, createDOMAdapter, FormError });
 });

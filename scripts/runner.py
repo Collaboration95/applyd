@@ -88,6 +88,7 @@ class Hooks:
     failure: Callable[[Action, retry_policy.Reason, datetime], None]
     answer_reuse: Callable[[Action], int | None] | None = None
     checkpoint: Callable[[], dict] | None = None
+    native_guard: Callable[[Action, datetime], None] | None = None
 
 
 class Runner:
@@ -463,18 +464,35 @@ class Runner:
                         # click but retain the claim/pending for reconciliation.
                         now = batches.validate_event_time(clock())
                         self._boundary(state, action, now, begun=True)
-                    started = self.monotonic()
+                    def native_guard():
+                        # No telemetry persistence may intervene after this fresh
+                        # check and before the native callback. The outer span
+                        # still includes all guard effort and persistence time.
+                        at = batches.validate_event_time(clock())
+                        self._boundary(state, action, at, begun=True)
+                        check = self.hooks.native_guard or self.hooks.guard
+                        if check(action, batches.validate_event_time(clock())) is not None:
+                            raise ValueError("Runner native guard must explicitly succeed with None")
+                    duration = 0.
+                    def invoke(fn):
+                        # V1 keeps timing only the adapter invocation. V2's
+                        # inclusive browser span also measures the fresh guard.
+                        nonlocal duration
+                        started = self.monotonic()
+                        try:
+                            return fn()
+                        finally:
+                            duration += self.monotonic() - started
                     try:
                         if retry_count:
                             with spans.span("retry", counters={"retries": 1}):
-                                observation = spans.LiveAdapter(self.adapter)(action)
+                                observation = spans.LiveAdapter(self.adapter, guard=native_guard, invoke=invoke)(action)
                         else:
-                            observation = spans.LiveAdapter(self.adapter)(action)
+                            observation = spans.LiveAdapter(self.adapter, guard=native_guard, invoke=invoke)(action)
                     except Exception:
                         self._metric(metrics.observe, self.root, self.run_id, action.sequence,
-                            self.monotonic() - started, failure_reason=reason.value, failed=True)
+                            duration, failure_reason=reason.value, failed=True)
                         raise
-                    duration = self.monotonic() - started
                     if not isinstance(observation, Observation):
                         self._metric(metrics.observe, self.root, self.run_id, action.sequence, duration,
                                         failure_reason=reason.value, failed=True)

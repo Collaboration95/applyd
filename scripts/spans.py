@@ -19,6 +19,7 @@ PHASES = frozenset('workflow startup context_loading saved_discovery card_screen
 CHANNELS = frozenset({'browser', 'model', 'tool', 'user_wait', 'blocked_wait', 'orchestration'})
 COUNTERS = frozenset({'uploads', 'repeated_uploads', 'skipped_fields', 'field_writes', 'record_reads', 'exports', 'observations', 'redundant_observations', 'retries'})
 CURRENT = ContextVar('applyd_spans', default=None)
+AUTHORIZING = ContextVar('applyd_span_authorization', default=False)
 FIELDS = frozenset({'schema_version', 'run_id', 'application_id', 'attempt_id', 'action_id', 'span_id', 'parent_id', 'process_id', 'phase', 'channel', 'started_at', 'ended_at', 'duration_seconds', 'outcome', 'coverage', 'counters', 'model'})
 
 
@@ -57,7 +58,7 @@ def validate(row):
                 or (model['output_tokens'] is not None and (type(model['output_tokens']) is not int or model['output_tokens'] < 0))
                 or (model['generation_seconds'] is not None and not _finite(model['generation_seconds']))):
             raise ValueError('invalid_span_model_measurement')
-        if model['generation_seconds'] is not None and (row['channel'] != 'model' or row['coverage'] != 'measured' or abs(model['generation_seconds'] - row['duration_seconds']) > .000001):
+        if model['generation_seconds'] is not None and (row['channel'] != 'model' or row['coverage'] != 'measured' or model['generation_seconds'] > row['duration_seconds'] + .000001):
             raise ValueError('model_generation_interval_mismatch')
     return row
 
@@ -122,6 +123,9 @@ class Recorder:
 
     @contextmanager
     def span(self, phase, channel='tool', *, counters=None, model=None, writer=None):
+        if AUTHORIZING.get():
+            yield None
+            return
         row = None
         def begin():
             nonlocal row
@@ -154,8 +158,6 @@ class Recorder:
                 def finish():
                     row.update(ended_at=batches.validate_event_time(self.wall()).astimezone(ZoneInfo('Asia/Singapore')).isoformat(),
                         duration_seconds=self.monotonic() - started, outcome=row['outcome'] if row['outcome'] in {'failed','handoff'} else outcome, coverage='measured')
-                    if row['model'] is not None and row['channel'] == 'model' and row['model']['output_tokens'] is not None:
-                        row['model']['generation_seconds'] = row['duration_seconds']
                     validate(row); self._save()
                 with writer() if writer else nullcontext():
                     self._safe(finish)
@@ -164,19 +166,34 @@ class Recorder:
         with self.span(phase, channel, **kwargs):
             return fn()
 
-    def generation(self, phase, configuration, fn):
+    def generation(self, phase, configuration, fn, *, output_usage=None, before_call=None):
         """fn returns (value, actual output_tokens or None) from its provider.
 
         No model label, service tier, input-token count or advertised mode can
-        supply output usage. The exact same measured interval is its denominator.
+        supply output usage. Time only the provider callback, excluding durable
+        reservation, fresh guards and subsequent usage extraction.
         """
         model = {**configuration, 'output_tokens': None, 'generation_seconds': None}
         with self.span(phase, 'model', model=model) as row:
-            value, output_tokens = fn()
+            if before_call is not None:
+                before_call()
+            started = self.monotonic()
+            result = fn()
+            generation_seconds = self.monotonic() - started
+            if output_usage is None:
+                value, output_tokens = result
+            else:
+                value = result
+                try:
+                    output_tokens = output_usage(result)
+                except Exception:
+                    output_tokens = None
             if output_tokens is not None and (type(output_tokens) is not int or output_tokens < 0):
                 output_tokens = None  # malformed telemetry cannot change a provider result
             if row is not None:
                 row['model']['output_tokens'] = output_tokens
+                if output_tokens is not None and _finite(generation_seconds):
+                    row['model']['generation_seconds'] = generation_seconds
             return value
 
     def ingest(self, row):
@@ -191,9 +208,11 @@ class Recorder:
             if previous is None and row['outcome'] != 'open':
                 raise ValueError('span_reservation_required')
             if previous is not None:
-                fixed = FIELDS - {'ended_at', 'duration_seconds', 'outcome', 'coverage', 'model'}
+                fixed = FIELDS - {'ended_at', 'duration_seconds', 'outcome', 'coverage', 'model', 'counters'}
                 if previous['outcome'] != 'open' or row['outcome'] == 'open' or any(previous[k] != row[k] for k in fixed):
                     raise ValueError('duplicate_or_changed_span')
+                if (set(previous['counters']) != set(row['counters']) or any(row['counters'][k] < v for k, v in previous['counters'].items())):
+                    raise ValueError('changed_span_counters')
                 before_model, after_model = previous['model'], row['model']
                 if (before_model is None) != (after_model is None) or (before_model is not None and (any(before_model[k] != after_model[k] for k in ('provider','model','configuration')) or any(before_model[k] is not None for k in ('output_tokens','generation_seconds')))):
                     raise ValueError('changed_span_model')
@@ -241,28 +260,70 @@ def measured(phase, channel='tool', **kwargs):
     return decorate
 
 
+def authorize(guard):
+    """No telemetry writes inside a last-moment authorization callback.
+
+    Its effort remains in the enclosing native span; a nested guard span's
+    completion save must not create a fresh STOP window after the check.
+    """
+    token = AUTHORIZING.set(True)
+    try:
+        return guard()
+    finally:
+        AUTHORIZING.reset(token)
+
+
+def require_native_guard(guard):
+    if authorize(guard) is not None:
+        raise ValueError('native_guard_refused')
+
+
 class LiveAdapter:
     """Concrete synchronous boundary wrapper. Inner tool calls use boundary.call.
 
     perform(action, boundary) is optional; legacy __call__(action) remains valid
     and records only the observed outer browser boundary, no invented children.
     """
-    def __init__(self, adapter):
-        self.adapter = adapter
+    def __init__(self, adapter, *, guard, invoke=None):
+        self.adapter, self.guard = adapter, guard
+        self.invoke = invoke or (lambda fn: fn())
 
     def __call__(self, action):
         recorder = CURRENT.get()
         phase = {'discover': 'saved_discovery', 'prepare': 'form_filling', 'review': 'review', 'submit': 'submission'}[action.kind.value]
         with span(phase, 'browser') as row:
+            require_native_guard(self.guard)  # after reservation, before native work
             perform = getattr(type(self.adapter), 'perform', None)
-            result = perform(self.adapter, action, recorder) if callable(perform) else self.adapter(action)
+            boundary = NativeBoundary(recorder, self.guard)
+            result = self.invoke(lambda: perform(self.adapter, action, boundary) if callable(perform) else self.adapter(action))
             if row is not None and getattr(result, 'failure', None) is not None:
                 row['outcome'] = 'failed'
             return result
 
     def observe_url(self, action):
         with span('preflight', 'browser'):
+            require_native_guard(self.guard)
             return self.adapter.observe_url(action)
+
+
+class NativeBoundary:
+    """Keep each nested native callback guarded after its own reservation."""
+    def __init__(self, recorder, guard):
+        self.recorder, self.guard = recorder, guard
+
+    def __getattr__(self, name):
+        return getattr(self.recorder, name)
+
+    def call(self, phase, channel, fn, **kwargs):
+        counters = kwargs.pop('counters', None) or {}
+        with span(phase, channel, counters=dict.fromkeys(counters, 0), **kwargs) as row:
+            require_native_guard(self.guard)
+            if row is not None:
+                row['counters'].update(counters)
+            return fn()
+
+    def generation(self, phase, configuration, fn, **kwargs):
+        return self.recorder.generation(phase, configuration, fn, before_call=lambda: require_native_guard(self.guard), **kwargs)
 
 
 def quantiles(values):

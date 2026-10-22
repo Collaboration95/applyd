@@ -45,7 +45,9 @@ Asynchronous asset/hash observations reread current native field values and
 recheck input identity/layout. Guards run inside each measured callback, after its
 awaited durable span reservation and immediately before every observe, resolver, receipt operation,
 verification and write. STOP during telemetry persistence blocks the operation.
-No automatic write retry or rollback is introduced.
+The DOM adapter also rechecks the supplied guard after asynchronous file hashing
+and before each native selected-asset callback. No automatic write retry or
+rollback is introduced.
 
 Reuse performs zero file-picker, upload or path-entry commands. Fresh local hash
 resolution remains mandatory. Exact submitted copies, provenance, hashes and
@@ -80,6 +82,16 @@ always records the actual outer browser boundary. A runtime may implement
 `boundary.call(phase, channel, callback)` for navigation, listing capture, file
 picker, upload, observations/readback and other tools. Legacy callable adapters
 keep their behavior and only their observed outer boundary is measured.
+`LiveAdapter(adapter, guard=...)` requires a fresh authorization callback (`None` succeeds; refusal raises). It
+checks after each outer reservation, including URL observation. The boundary
+passed to `perform` also guards each nested `call` after its reservation. Guards
+run without nested telemetry writes: their effort stays in the enclosing span,
+and no guard-span completion save can introduce another STOP window. The runner
+rechecks policy/budgets and uses `Hooks.native_guard` (or the ordinary guard when
+absent). After `begin_submit`, the workspace hook checks this invocation's exact
+owned durable claim, transitive aliases and revalidates prepared bytes, answers, review, eligibility,
+policy, writer ownership and STOP. It never recovers or clears an intent to make
+another click possible; refusal retains pending uncertainty for reconciliation.
 `boundary.correlate(action, actual_attempt_id)` adds a newly prepared attempt;
 unknown IDs remain null rather than being inferred.
 
@@ -104,17 +116,29 @@ IDs preserve siblings for concurrent promises; never share an implicit async
 stack between concurrent tools. Python and JS use the same exact schema. The
 form helper emits actual observation/write/upload/skip counters. A runtime that
 can observe repeated uploads or redundant observations supplies those counters
-explicitly; absence stays unknown. Counters count attempted operations only
-inside completed measured boundaries, with `counter_coverage` exposing interrupted
-reservations. Actual record-file reads increment their current span without a
+explicitly; absence stays unknown. Operation counters reserve their declared keys
+at zero and increment only
+when the fresh guard allows invocation of the native callback. A refused write
+or upload completes with zero; an invoked failure counts once. Imported
+completions may increase declared counters but cannot remove/change keys or
+decrease values. Only completed measured boundaries contribute counts, with
+`counter_coverage` exposing interrupted reservations even when their saved value
+is zero. Actual record-file reads increment their current span without a
 separate telemetry write per file. No filename-based repetition heuristic exists.
 
 For provider calls, `Recorder.generation(phase, configuration, fn)` accepts
-`fn -> (value, actual_output_tokens_or_None)`. Configuration has private
+`fn -> (value, actual_output_tokens_or_None)`. Optional
+`output_usage(result)` extracts usage separately when `fn` returns a provider
+result directly. Configuration has private
 `provider`, `model`, and `configuration` labels. JS `telemetry.call` accepts
 `{model: configuration, outputUsage: result => actualOutputTokens(result)}`.
-Only actual output-token usage and that same generation's measured interval
-produce tokens/second. Missing usage remains null; input tokens, model names,
+`generation_seconds` times only the actual provider callback, after reservation
+and guards and before tuple unpacking/usage extraction. The inclusive span still
+records reservation, guard and extraction effort (its own completion save falls
+outside its interval). Validation requires the generation interval to fit inside
+the inclusive model span; equality is not required. Only actual output-token
+usage and that same generation's measured interval produce tokens/second. Missing
+usage remains null; input tokens, model names,
 service-tier names and advertised Fast mode do not measure output speed.
 Configuration labels remain private; aggregate reports count configurations.
 
@@ -251,23 +275,25 @@ verified without checking its observed values and attachment.
 
 Across the entire connected workflow, field writes change 3 to 1; uploads/path
 entries 1 to 0; observations 11 to 4 (including the independent review read);
-record reads 109 to 73; exports 5 to 2. The after run includes one inherited
+record reads 131 to 91; exports 5 to 2. The after run includes one inherited
 submit-recovery export and one bounded checkpoint export. Two matching non-file
 fields are skipped; verified attachment reuse performs no upload/path entry.
 These are actual helper/adapter invocation counts, not separate illustrative loops.
+Both schedules include fresh authorization after durable reservations; the final
+guards have no nested span writes and retain their time in the enclosing span.
 
 Injected costs are observation 0.2s, field write 0.3s, upload/path 0.9s, record read
 0.01s, export 0.1s and durable span save 0.001s. Instrumented workflow elapsed
-latency is 6.390s before and 2.714s after, with one sample each. Recorded workflow
-wall/active denominators are 6.389s and 2.713s; the final envelope's own completion
+latency is 6.562s before and 2.858s after, with one sample each. Recorded workflow
+wall/active denominators are 6.561s and 2.857s; the final envelope's own completion
 save adds 0.001s outside its measured interval. Each run has one evidence-backed
-**synthetic** confirmation, producing fixture rates of 563.468461 and 1326.944342
-per wall/active hour. First-confirmation latency is 6.051s and 2.399s. These fake
+**synthetic** confirmation, producing fixture rates of 548.696845 and 1260.063003
+per wall/active hour. First-confirmation latency is 6.223s and 2.543s. These fake
 costs, single-sample quantiles and rates make no claim about live performance.
 
 Paired executions disable telemetry only, preserving all guards, verification and
-workflow inputs. Elapsed latency is then 5.990s and 2.430s. Thus injected durable
-telemetry overhead is 0.400s (400 saves) and 0.284s (284 saves), including both
+workflow inputs. Elapsed latency is then 6.210s and 2.610s. Thus injected durable
+telemetry overhead is 0.352s (352 saves) and 0.248s (248 saves), including both
 Python spans and ingested JS rows. Uninstrumented pairs do not claim measured
 active/wall span denominators. Separate fake-clock confirmation/cross-post/retry
 and partial-coverage tests retain zero/unknown and first-confirmation coverage.

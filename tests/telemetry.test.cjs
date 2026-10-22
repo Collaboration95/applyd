@@ -41,3 +41,24 @@ test('tokens per second uses actual output usage with matching monotonic generat
   assert.equal(result.value,42);assert.equal(rows[1].model.output_tokens,10);assert.equal(rows[1].model.generation_seconds,2);
   await t.call('review','model',()=>true,{model});assert.equal(rows[3].model.output_tokens,null);assert.equal(rows[3].model.generation_seconds,null);
 });
+
+test('provider interval excludes durable sink and usage extraction latency', async () => {
+  let seconds=0;const rows=[];
+  const t=telemetry.create({context:{run_id:'fixture'},processId:'model',monotonic:()=>seconds,
+    emit:async r=>{rows.push(r);seconds+=10;}});
+  const result=await t.call('answer_resolution','model',async()=>{seconds+=2;return {output_tokens:10,value:42};},
+    {model:{provider:'synthetic',model:'fixture',configuration:'default'},outputUsage:r=>{seconds+=3;return r.output_tokens;}});
+  assert.equal(result.value,42);assert.equal(seconds,25);
+  assert.equal(rows[1].duration_seconds,15);
+  assert.equal(rows[1].model.generation_seconds,2);
+  assert.equal(rows[1].model.output_tokens/rows[1].model.generation_seconds,5);
+});
+
+test('slow or failed usage extraction never changes or replays provider result', async () => {
+  let seconds=0,calls=0;const rows=[];
+  const t=telemetry.create({context:{run_id:'fixture'},processId:'model',monotonic:()=>seconds,emit:r=>rows.push(r)});
+  assert.equal(await t.call('review','model',()=>{calls++;seconds+=2;return 42;},
+    {model:{provider:'synthetic',model:'fixture',configuration:'default'},outputUsage:()=>{seconds+=3;throw Error('synthetic');}}),42);
+  assert.equal(calls,1);assert.equal(rows[1].duration_seconds,5);
+  assert.equal(rows[1].model.output_tokens,null);assert.equal(rows[1].model.generation_seconds,null);
+});

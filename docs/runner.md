@@ -118,6 +118,18 @@ new listing headers/records through existing helpers. Unsupported tools/layouts
 must produce a failure or unresolved verification, not a fabricated completion.
 The runner does not infer answers, resume scope, eligibility or UI observations.
 
+`Hooks.native_guard(action, now) -> None` is an optional stricter native-boundary
+hook, defaulting to `guard`. It runs after every durable outer or nested tool
+reservation, immediately before native invocation, with nested telemetry disabled.
+Policy/budget checks run fresh first. An integration whose ordinary guard refuses
+all uncertain submissions must supply this hook to validate the exact claim owned
+by the current invocation after `begin_submit`. It must preserve that intent on
+refusal and never grant a retry or reconcile automatically. The workspace hook
+rechecks claim identity/ownership, submission snapshot/review/freshness, policy,
+writer ownership and STOP without recovering the active claim. URL observation
+also uses a fresh guard after its browser span reservation. Adapters with nested
+native callbacks must invoke them through the supplied `boundary.call`.
+
 ## Checkpoints, queue and quotas
 
 State keeps `plan`, `pending` and the last verified `checkpoint` separately.

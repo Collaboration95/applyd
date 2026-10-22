@@ -55,7 +55,7 @@ async function rpc(kind,data){send({kind,data,seconds});const r=await receive();
  async function currentResume(expected){const current=await rpc('resolve');if(['id','path','sha256'].some(key=>current[key]!==expected[key]))throw Error('resume_changed');}
  async function guarded(phase,fn,channel='tool',counters={},resume=null,persist=true){
   const attempted=Object.fromEntries(Object.keys(counters).map(key=>[key,0]));
-  const checked=async()=>{await rpc('guard');if(resume)await currentResume(resume);Object.assign(attempted,counters);return fn();};
+  const checked=async()=>{await rpc('guard');if(resume){await currentResume(resume);await rpc('guard');}Object.assign(attempted,counters);return fn();};
   return telemetry && persist?telemetry.call(phase,channel,checked,{counters:attempted}):checked();
  }
  const resolver=()=>rpc('resolve');
@@ -79,7 +79,7 @@ async function rpc(kind,data){send({kind,data,seconds});const r=await receive();
    written.push(action);await check(after,written);
   }
   const observed=await observe();await check(observed,plan.actions,false);
-  await rpc('guard');await currentResume(config.resume);
+  await currentResume(config.resume);await rpc('guard');
   return {status:'verified',observed};
  }
  configure(config.context);
@@ -166,7 +166,7 @@ class FormBridge:
             try:
                 if kind=='span': value=self.controller.telemetry.ingest(data)
                 elif kind=='guard':
-                    self.controller.hooks.guard(self.action,self.clock.wall());value=True
+                    spans.authorize(lambda:self.controller.hooks.native_guard(self.action,self.clock.wall()));value=True
                 elif kind=='resolve': value=selection(self.boundary.resolve())
                 elif kind=='verify': value=self.boundary.verify(data)
                 elif kind=='remember': value=self.boundary.remember(data)
@@ -213,7 +213,7 @@ def connected_run(reference=False, instrumented=True, *, fault=None):
                     w.event(root,argparse.Namespace(id=app,status='ready',note='',resume_scope='backend',answers=root/answer['answers_path'],evidence=None),clock.wall(),deferred=not reference)
                     prepared=w.read(root/action.record_ref)['prepared'];context['attempt_id']=prepared['attempt_id']
                     recorder.correlate(action,prepared['attempt_id'])
-                    def guard(): controller.hooks.guard(action,clock.wall());return True
+                    def guard(): controller.hooks.native_guard(action,clock.wall());return True
                     def read_asset(asset):
                         if asset!=ASSET: raise ValueError('synthetic_asset_changed')
                         return asset_file.read_bytes()

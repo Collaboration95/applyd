@@ -711,6 +711,7 @@ class ExclusivePeriodRegressionTests(unittest.TestCase):
     setUp = SpanTests.setUp
 
     def rows(self):
+        self.clock.seconds = 0
         with self.rec.span('workflow','orchestration') as parent: self.clock.advance(10)
         child={**parent, 'span_id':'child', 'parent_id':parent['span_id'],
                'channel':'browser', 'phase':'navigation', 'process_id':'native',
@@ -731,3 +732,56 @@ class ExclusivePeriodRegressionTests(unittest.TestCase):
                 rows=self.rows(); rows[-1].update(coverage=coverage,outcome=outcome,duration_seconds=None,ended_at=None)
                 report=spans.summarize([],rows,start=NOW,end=NOW+timedelta(seconds=1))
                 self.assertIsNone(next(r['seconds'] for r in report['exclusive_channels'] if r['channel']=='orchestration'))
+                self.assertEqual(report['coverage'], 'partial')
+
+    def test_period_excluded_misaligned_child_never_produces_known_overhead(self):
+        for channel in ('browser', 'tool', 'orchestration', 'user_wait', 'blocked_wait'):
+            for period in (False, True):
+                with self.subTest(channel=channel, period=period):
+                    rows=self.rows()
+                    rows[-1].update(channel=channel, ended_at=(NOW+timedelta(seconds=108)).isoformat())
+                    selection={'start':NOW,'end':NOW+timedelta(seconds=1)} if period else {}
+                    report=spans.summarize([],rows,**selection)
+                    self.assertEqual(report['spans'],1 if period else 2)
+                    self.assertEqual(report['clock_alignment'],'unknown')
+                    self.assertEqual(report['coverage'],'partial')
+                    self.assertIsNone(next(r['seconds'] for r in report['exclusive_channels'] if r['channel']=='orchestration'))
+                    self.assertIsNone(report['critical_path_active_seconds'])
+                    self.assertIsNone(report['summed_process_effort_seconds'])
+                    self.assertEqual(report,spans.summarize([],reversed(rows),**selection))
+
+    def test_unrelated_excluded_clock_discontinuity_does_not_poison_selected_parent(self):
+        rows=self.rows()
+        rows.append({**rows[-1], 'span_id':'unrelated', 'parent_id':None,
+                     'ended_at':(NOW+timedelta(seconds=108)).isoformat()})
+        report=spans.summarize([],rows,start=NOW,end=NOW+timedelta(seconds=1))
+        self.assertEqual(report['coverage'],'recorded_intervals_only')
+        self.assertEqual(report['clock_alignment'],'wall_placement_with_monotonic_lengths')
+        self.assertEqual(next(r['seconds'] for r in report['exclusive_channels'] if r['channel']=='orchestration'),4)
+
+
+class ConnectedGuardBoundaryTests(unittest.TestCase):
+    setUp = SpanTests.setUp
+
+    def test_rpc_guard_uses_final_native_check_without_nested_telemetry_saves(self):
+        import io
+        from types import SimpleNamespace
+        import synthetic_baseline
+        calls=[]
+        @spans.measured('resume_resolution')
+        def native_guard(action, at):
+            calls.append('native_guard'); self.clock.advance(2); spans.count('record_reads')
+        bridge=synthetic_baseline.FormBridge.__new__(synthetic_baseline.FormBridge)
+        bridge.clock=self.clock; bridge.action=object()
+        bridge.controller=SimpleNamespace(hooks=SimpleNamespace(native_guard=native_guard))
+        bridge.process=SimpleNamespace(stdin=io.StringIO(), stdout=io.StringIO(
+            json.dumps({'kind':'guard','seconds':0})+'\n'+json.dumps({'kind':'result','value':42,'seconds':2})+'\n'))
+        with self.rec.span('workflow'), patch.object(synthetic_baseline.select,'select',return_value=([bridge.process.stdout],[],[])):
+            with patch.object(self.rec,'_save',side_effect=AssertionError('trailing guard telemetry')) as persisted:
+                self.assertEqual(bridge.exchange({}),42)
+                persisted.assert_not_called()
+        self.assertEqual(calls,['native_guard'])
+        rows=spans.load(self.root)
+        self.assertEqual(len(rows),1)
+        self.assertEqual(rows[0]['duration_seconds'],2)
+        self.assertEqual(rows[0]['counters']['record_reads'],1)

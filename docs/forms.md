@@ -50,7 +50,8 @@ checks, immutable private records and any subsequent review/submission workflow.
    marker, preserve that exact label during question preparation.
 4. Call `plan`, inspect its status, then call `execute` with a live guard and
    fresh resolver callback. The guard must return exactly `true` before every
-   observe, resolver and write call; exceptions/refusals stop. It must enforce
+   observe, resolver, verification, receipt and write call, and before returning
+   verified; exceptions/refusals stop. It must enforce
    current/frozen settings, work budget/deadline, answer/history validity, actual
    job identity, safety challenges and writer ownership. Keep browser tool calls
    bounded by the parent's normal timeout. No automatic retry or rollback occurs.
@@ -187,11 +188,27 @@ the agent for inspection; computer fallback is never automatically invoked.
 
 `resumeResolver()` must call the parent's current resolver, not return a cached
 selection. Execution checks it before any writes and again after each write's
-span reservation, directly before the native call. Receipt verification and
-receipt creation also require the exact current ID/path/hash after reservation.
-These final resolutions must not persist nested telemetry before the native
-operation; their effort remains inside the enclosing span. The final readback
-and attachment checks have no trailing telemetry save before returning verified.
+span reservation. Receipt verification and creation also require the exact current
+ID/path/hash after reservation. The final order is reservation, guarded asynchronous
+resolution, exact ID/path/hash comparison, asynchronous authorization, then callback
+entry. Attempt counters advance only at callback entry. Resolution can yield to
+STOP, so a successful guard before resolution never authorizes the later callback.
+The final guard invokes the callback in its own continuation, without another
+await or telemetry save between its successful result and callback entry.
+These resolutions and guards must not persist nested telemetry; their effort
+remains inside the enclosing span.
+
+After the final observation's completion save, execution independently verifies
+all field/attachment values, resolves the exact release again (verification may
+have yielded), then checks authorization last and returns the verified result.
+There is no telemetry save inside this final sequence. The DOM adapter checks
+authorization after hashing, before each selected-asset read, and after the last
+asset read before collecting native readback.
+This orders trusted callback entry; it is not an atomic transaction across the
+browser, filesystem or transport. An asynchronous native bridge/verifier must
+enforce identity, current bytes and authorization at its own side-effect boundary,
+including after internal awaits. A callback already entered cannot be cancelled
+by this helper; independent readback/review and submission gates remain required.
 Missing/failing/changing resolution stops. No older release fallback
 is possible. `upload({input, resume})` is an optional **trusted native file chooser
 bridge**. It must verify the actual chosen release's ID, canonical path and byte

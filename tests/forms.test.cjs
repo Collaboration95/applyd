@@ -655,3 +655,164 @@ test('receipt invalidated during reuse completion is rechecked without a trailin
   assert.equal(result.reason,'verification_failed'); assert.deepEqual(fake.writes,[]);
   assert.equal(events.at(-1),'verify');
 });
+
+for (const target of ['field write', 'upload', 'verify', 'remember']) {
+  for (const change of ['STOP', 'replacement', 'changed-bytes']) {
+    for (const measured of [false, true]) test(`${change} inside asynchronous ${target} resolver prevents the callback (telemetry=${measured})`, async () => {
+      const T = require('../scripts/telemetry.js');
+      const {input} = await scenario();
+      input.observation.fields = input.observation.fields.filter(f => f.type === 'file' || (target === 'field write' && f.field_id === 'full-name'));
+      input.bindings = input.bindings.filter(b => input.observation.fields.some(f => f.field_id === b.field_id));
+      input.approved.answers = input.approved.answers.filter(a => input.bindings.some(b => b.occurrence_id === a.occurrence_id));
+      const fake = memory(input), file = fake.state.fields.find(f => f.type === 'file');
+      const asset = {account_id:'synthetic', asset_id:'opaque', revision:'1'};
+      if (target === 'verify') { file.platform_asset = asset; file.valid = true; }
+      const phase = {'field write':'form_filling', upload:'resume_upload', verify:'resume_reuse', remember:'resume_reuse'}[target];
+      const calls = [], rows = [], events = [];
+      let armed = false, changed = false, atChange, reserved, resolutions = 0;
+      const observe = fake.adapter.observe, write = fake.adapter.write;
+      fake.adapter.observe = () => { calls.push('observe'); events.push('observe'); return observe(); };
+      fake.adapter.write = async (...args) => {
+        calls.push(args[0].kind); events.push('native');
+        await write(...args);
+        if (target === 'remember') file.platform_asset = asset;
+      };
+      const telemetry = T.create({context:{run_id:'synthetic'}, processId:'fixture', emit:async row => {
+        events.push('persist'); rows.push(row);
+        if (!changed && row.outcome === 'open' && row.phase === phase) { armed = true; reserved = row.span_id; }
+      }});
+      const result = await forms.execute(forms.plan(input), fake.adapter, {
+        telemetry:measured ? telemetry : null,
+        guard:async () => { await new Promise(r => setImmediate(r)); events.push('guard'); return !(changed && change === 'STOP'); },
+        resumeResolver:async () => {
+          calls.push('resolve'); events.push('resolve');
+          // Without a ledger, target the same resolver from the actual schedule:
+          // initial resolution, then pre-write/verification/receipt resolution.
+          resolutions++;
+          if (!measured && resolutions === {'field write':2, upload:3, verify:2, remember:4}[target]) armed = true;
+          if (armed && !changed) await new Promise(r => setImmediate(() => { changed = true; atChange = [...calls]; r(); }));
+          if (changed && change === 'changed-bytes') throw Error('synthetic hash mismatch');
+          return {...resume, id:changed && change === 'replacement' ? 'replacement' : resume.id};
+        },
+        resumeVerifier:async () => { calls.push('verify'); events.push('native'); return true; },
+        rememberResume:async () => { calls.push('remember'); events.push('native'); return true; }
+      });
+      assert.equal(changed, true);
+      assert.equal(result.reason, change === 'STOP' ? 'guard_refused' : change === 'replacement' ? 'resume_changed' : 'resume_resolution_failed');
+      assert.deepEqual(calls, atChange, 'no native/resolver/receipt callback after the asynchronous change');
+      if (measured) {
+        const completion = rows.find(r => r.span_id === reserved && r.outcome !== 'open');
+        assert.equal(completion.outcome, 'failed');
+        for (const attempted of Object.values(completion.counters)) assert.equal(attempted, 0);
+      }
+      for (let i = 0; i < events.length; i++) if (events[i] === 'native') assert.equal(events[i-1], 'guard');
+    });
+  }
+}
+
+for (const attachment of ['local reuse', 'local upload', 'platform reuse']) {
+  for (const measured of [false, true]) {
+    test(`STOP inside final asynchronous resolver blocks ${attachment} verified return (telemetry=${measured})`, async () => {
+      const T = require('../scripts/telemetry.js');
+      const {input} = await scenario();
+      input.observation.fields = input.observation.fields.filter(f => f.type === 'file');
+      input.bindings = input.bindings.filter(b => b.field_id === 'resume'); input.approved.answers = [];
+      const fake = memory(input), file = fake.state.fields[0];
+      if (attachment === 'local reuse') { file.value = clone(resume); file.valid = true; }
+      if (attachment === 'platform reuse') { file.platform_asset = {account_id:'synthetic',asset_id:'opaque',revision:'1'}; file.valid = true; }
+      let observations = 0, final = false, stopped = false, atStop;
+      const calls = [], observe = fake.adapter.observe, write = fake.adapter.write;
+      fake.adapter.observe = async () => {
+        calls.push('observe'); const view = await observe();
+        final = ++observations === (attachment === 'local upload' ? 3 : 2); return view;
+      };
+      fake.adapter.write = (...args) => { calls.push('write'); return write(...args); };
+      const result = await forms.execute(forms.plan(input), fake.adapter, {
+        telemetry: measured ? T.create({context:{run_id:'synthetic'},processId:'fixture',emit:async () => { await new Promise(r => setImmediate(r)); }}) : null,
+        guard:async () => { await new Promise(r => setImmediate(r)); return !stopped; },
+        resumeResolver:async () => {
+          calls.push('resolve');
+          if (final) await new Promise(r => setImmediate(() => { stopped = true; atStop = [...calls]; r(); }));
+          return clone(resume);
+        },
+        resumeVerifier:async () => { calls.push('verify'); return true; }
+      });
+      assert.equal(stopped, true); assert.equal(result.reason, 'guard_refused');
+      assert.deepEqual(calls, atStop);
+      assert.equal(fake.writes.length, attachment === 'local upload' ? 1 : 0);
+    });
+  }
+}
+
+for (const target of ['verify', 'remember']) {
+  test(`STOP inside asynchronous ${target} completion blocks subsequent callbacks and verified return`, async () => {
+    const {input} = await scenario();
+    input.observation.fields = input.observation.fields.filter(f => f.type === 'file');
+    input.bindings = input.bindings.filter(b => b.field_id === 'resume'); input.approved.answers = [];
+    const fake = memory(input), file = fake.state.fields[0];
+    const asset = {account_id:'synthetic',asset_id:'opaque',revision:'1'};
+    if (target === 'verify') { file.platform_asset = asset; file.valid = true; }
+    let stopped = false, calls = 0;
+    const write = fake.adapter.write;
+    fake.adapter.write = async (...args) => { assert.equal(stopped, false); await write(...args); file.platform_asset = asset; };
+    const callback = async () => { calls++; await new Promise(r => setImmediate(() => { stopped = true; r(); })); return true; };
+    const result = await forms.execute(forms.plan(input), fake.adapter, {...options,
+      guard:async () => !stopped, resumeVerifier:target === 'verify' ? callback : async () => { assert.equal(stopped, false); return true; },
+      rememberResume:callback});
+    assert.equal(calls, 1); assert.equal(result.reason, 'guard_refused');
+  });
+}
+
+test('STOP inside asynchronous selected-asset observation blocks native readback and later operations', async () => {
+  const doc = parse(); let stopped = false, selected = 0, readsAfterStop = 0;
+  const adapter = forms.createDOMAdapter({getRoot:() => { if (stopped) readsAfterStop++; return doc.getElementById('application-dialog'); },
+    getScope:() => ({application_id:'app-synthetic',tab_id:'tab',kind:'synthetic_application',url:doc.location.href}),
+    selectedResume:async () => { selected++; await new Promise(r => setImmediate(() => { stopped = true; r(); })); return null; }});
+  await assert.rejects(adapter.observeGuarded(async () => { if (stopped) throw Error('guard_refused'); }), /guard_refused/);
+  assert.equal(selected, 1); assert.equal(readsAfterStop, 0);
+});
+
+for (const change of ['verifier STOP', 'verifier replacement', 'verifier changed-bytes', 'last resolver STOP', 'last guard STOP']) {
+  test(`${change} at final platform reuse boundary cannot return verified`, async () => {
+    const T = require('../scripts/telemetry.js');
+    const {input} = await scenario();
+    input.observation.fields = input.observation.fields.filter(f => f.type === 'file');
+    input.bindings = input.bindings.filter(b => b.field_id === 'resume'); input.approved.answers = [];
+    const fake = memory(input);
+    fake.state.fields[0].platform_asset = {account_id:'synthetic',asset_id:'opaque',revision:'1'};
+    fake.state.fields[0].valid = true;
+    let observed = 0, final = false, finalVerified = false, stopped = false, changed = false;
+    const events = [], observe = fake.adapter.observe;
+    fake.adapter.observe = async () => { final = ++observed === 2; return observe(); };
+    const result = await forms.execute(forms.plan(input), fake.adapter, {
+      telemetry:T.create({context:{run_id:'synthetic'},processId:'fixture',emit:async () => { events.push('persist'); }}),
+      guard:async phase => {
+        if (finalVerified && phase === 'verify_resume' && change === 'last guard STOP') {
+          await new Promise(r => setImmediate(() => { stopped = true; changed = true; r(); }));
+        }
+        events.push('guard'); return !stopped;
+      },
+      resumeResolver:async () => {
+        events.push('resolve');
+        if (finalVerified && change === 'last resolver STOP') {
+          await new Promise(r => setImmediate(() => { stopped = true; changed = true; r(); }));
+        }
+        if (finalVerified && change === 'verifier changed-bytes') throw Error('synthetic hash mismatch');
+        return {...resume, id:finalVerified && change === 'verifier replacement' ? 'replacement' : resume.id};
+      },
+      resumeVerifier:async () => {
+        events.push('verify');
+        if (final) await new Promise(r => setImmediate(() => {
+          finalVerified = true;
+          if (change.startsWith('verifier')) { changed = true; stopped = change === 'verifier STOP'; }
+          r();
+        }));
+        return true;
+      }
+    });
+    assert.equal(changed, true); assert.equal(finalVerified, true);
+    assert.equal(result.reason, change === 'verifier replacement' ? 'resume_changed' : change === 'verifier changed-bytes' ? 'resume_resolution_failed' : 'guard_refused');
+    assert.deepEqual(fake.writes, []);
+    assert.equal(events.includes('persist', events.lastIndexOf('verify')), false, 'no trailing persistence in final checks');
+  });
+}

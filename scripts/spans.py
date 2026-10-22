@@ -396,20 +396,25 @@ def summarize(records, rows, *, start=None, end=None):
     roots = [r for r in rows if measured(r) and not ancestor(r)]
     intervals, aligned = [], True
     placed = {}
-    for r in rows:
+    selected_keys = {(r['run_id'], r['span_id']) for r in rows}
+    # Inclusive samples subtract direct dependencies even outside the period.
+    # Validate every such placement before using it, not only selected samples.
+    placement_rows = [r for r in all_rows if (r['run_id'], r['span_id']) in selected_keys
+                      or (r['run_id'], r['parent_id']) in selected_keys]
+    for r in placement_rows:
         if not measured(r):
             continue
         a = batches.validate_event_time(r['started_at']); b = a + timedelta(seconds=r['duration_seconds'])
         if abs((batches.validate_event_time(r['ended_at'])-b).total_seconds()) > .01:
             aligned = False
+            continue
         placed[(r['run_id'], r['span_id'])] = (a, b)
-        if r['channel'] not in {'user_wait', 'blocked_wait'}:
+        if (r['run_id'], r['span_id']) in selected_keys and r['channel'] not in {'user_wait', 'blocked_wait'}:
             intervals.append((a, b))
     # An inclusive caller is blocked by a descendant wait even across a tool
     # process boundary. Propagate only along that dependency chain, retaining
     # independently measured concurrent work; union all resulting fragments.
     excluded, unknown_wait = {}, False
-    selected_keys = {(r['run_id'], r['span_id']) for r in rows}
     for wait in all_rows:
         if wait['channel'] not in {'user_wait', 'blocked_wait'}:
             continue
@@ -431,10 +436,11 @@ def summarize(records, rows, *, start=None, end=None):
         b = a + timedelta(seconds=wait['duration_seconds'])
         if abs((batches.validate_event_time(wait['ended_at'])-b).total_seconds()) > .01:
             aligned = False
+            continue
         for key in ancestors:
             excluded.setdefault(key, []).append((a, b))
     active_intervals = [part for r in rows
-                        if measured(r) and r['channel'] not in {'user_wait', 'blocked_wait'}
+                        if (r['run_id'], r['span_id']) in placed and r['channel'] not in {'user_wait', 'blocked_wait'}
                         for part in _subtract([placed[(r['run_id'], r['span_id'])]],
                                               excluded.get((r['run_id'], r['span_id']), []))]
     active = _union(active_intervals)
@@ -475,10 +481,10 @@ def summarize(records, rows, *, start=None, end=None):
         # Selected parents retain their full duration, so all recorded direct
         # dependencies apply, including children starting outside this period.
         children = [c for c in all_rows if c['parent_id']==r['span_id'] and c['run_id']==r['run_id']]
-        if any(not measured(c) for c in children):
+        if (r['run_id'], r['span_id']) not in placed or any((c['run_id'], c['span_id']) not in placed for c in children):
             exclusive_unknown.add(r['channel']); continue
-        a = batches.validate_event_time(r['started_at']); b = a + timedelta(seconds=r['duration_seconds'])
-        occupied = [(batches.validate_event_time(c['started_at']), batches.validate_event_time(c['started_at'])+timedelta(seconds=c['duration_seconds'])) for c in children]
+        a, b = placed[(r['run_id'], r['span_id'])]
+        occupied = [placed[(c['run_id'], c['span_id'])] for c in children]
         exclusive[r['channel']].extend((r['process_id'], x, y) for x,y in _subtract([(a,b)], occupied))
     process_summaries = []
     for pid in {r['process_id'] for r in rows}:
@@ -490,7 +496,7 @@ def summarize(records, rows, *, start=None, end=None):
     process_summaries.sort(key=lambda row: json.dumps(row, sort_keys=True))
     generations = [m for m in model_rows if m['output_tokens'] is not None and m['generation_seconds'] is not None and m['generation_seconds'] > 0]
     return {'schema_version': 2, 'spans': len(rows), 'measured_spans': sum(measured(r) for r in rows),
-        'unknown_spans': sum(not measured(r) for r in rows), 'coverage': 'partial' if orphaned or any(not measured(r) for r in rows) or not workflow else 'recorded_intervals_only',
+        'unknown_spans': sum(not measured(r) for r in rows), 'coverage': 'partial' if orphaned or not aligned or unknown_wait or exclusive_unknown or any(not measured(r) for r in rows) or not workflow else 'recorded_intervals_only',
         'critical_path_active_seconds': active, 'summed_process_effort_seconds': process_effort,
         'wall_run_seconds': wall_seconds, 'unique_confirmed_applications': len(confirmations),
         'throughput_confirmations': len(active_confirmations), 'wall_throughput_confirmations': len(timed_confirmations),

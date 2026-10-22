@@ -168,24 +168,30 @@
     // Once observation begins the plan is single-use; reobserve and replan.
     plans.delete(prepared);
     let observed = null;
-    async function checkGuard(phase) {
+    async function checkGuard(phase, fn = () => undefined) {
       let allowed = false;
       try { allowed = await guard(phase); } catch { fail('guard_refused'); }
       if (allowed !== true) fail('guard_refused');
+      // Invoke in this continuation: no telemetry save or further await between
+      // the final authorization result and entering the trusted callback.
+      return fn();
     }
     async function guarded(phase, fn, measurement = {}) {
       // Reservation persistence may await an external transport. Check fresh
       // authorization after that wait, at the actual operation boundary.
       const counters = Object.fromEntries(Object.keys(measurement.counters || {}).map(key => [key, 0]));
       const checked = async () => {
-        await checkGuard(phase);
         // Resolve inside the reserved operation. A measured resolver's own
         // completion persistence would reopen the stale-release window.
         const releases = phase === 'write' ? entry.actions.filter(action => action.kind === 'upload_resume') :
           measurement.resume ? [measurement.resume] : [];
         for (const action of releases) await resolve(action, false);
-        Object.assign(counters, measurement.counters || {});
-        return fn();
+        // Resolution itself can yield to STOP. Authorization must be LAST,
+        // after reservation and resolution, before counters/native invocation.
+        return checkGuard(phase, () => {
+          Object.assign(counters, measurement.counters || {});
+          return fn();
+        });
       };
       return telemetry && measurement.persist !== false ? telemetry.call(measurement.phase || (phase === 'observe' ? 'form_observation' : phase === 'write' ? 'form_filling' : phase === 'verify_resume' ? 'resume_reuse' : 'resume_resolution'), phase === 'write' || phase === 'observe' ? 'browser' : 'tool', checked, { counters }) : checked();
     }
@@ -198,7 +204,7 @@
     }
     async function resolve(action, instrumented = true) {
       let selection;
-      try { selection = checkResume(await (instrumented ? guarded('resolve_resume', resumeResolver) : resumeResolver())); }
+      try { selection = checkResume(await guarded('resolve_resume', resumeResolver, { persist: instrumented })); }
       catch (error) { if (error.code === 'guard_refused') throw error; fail('resume_resolution_failed'); }
       if (!equal(selection, action.resume)) fail('resume_changed');
     }
@@ -250,14 +256,13 @@
         verified.push(action.field_id);
       }
       const final = await observe();
+      // Trusted final boundary: after the last observation completion save,
+      // independent attachment/value verification -> fresh exact release ->
+      // last authorization -> result. These checks never persist telemetry.
       for (const action of entry.actions) if (!await verifiedMatch(final, action, false)) fail('verification_failed');
-      // The last readback/receipt completion can persist too. Revalidate after
-      // all instrumentation before returning a verified result, even for a
-      // local File with no platform receipt callback.
-      await checkGuard('verify_resume');
       for (const action of entry.actions) if (action.kind === 'upload_resume') await resolve(action, false);
-      return freeze({ status: 'verified', snapshot_id: prepared.snapshot_id, written, skipped, verified,
-        observed: copy(final) });
+      return await checkGuard('verify_resume', () => freeze({ status: 'verified',
+        snapshot_id: prepared.snapshot_id, written, skipped, verified, observed: copy(final) }));
     } catch (error) {
       // Content-free reasons: raw adapter errors can contain private data.
       return handoff(error instanceof FormError ? error.code : 'adapter_failed', kind, written,
@@ -368,6 +373,7 @@
         field.value = { id: bound ? receipt.selection.id : null, path: bound ? receipt.selection.path : null,
           sha256: digest, name: file.name, size: file.size };
       }
+      if (guard) await guard(); // hashing can yield before native readback
       const current = collect().observation;
       if (layout(current) !== layout(observation)) fail('page_changed');
       for (const [id, { input, file }] of files) {
@@ -385,6 +391,7 @@
             field.valid = true;
           }
         }
+        if (guard) await guard(); // the last selected-asset callback can yield too
         const latest = collect().observation;
         if (layout(latest) !== layout(current)) fail('page_changed');
         for (const [id, { input, file }] of files) {

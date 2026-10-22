@@ -46,15 +46,22 @@ recheck input identity/layout. Guards run inside each measured callback, after i
 awaited durable span reservation and immediately before every observe, resolver, receipt operation,
 verification and write. STOP during telemetry persistence blocks the operation.
 Every write and receipt callback also revalidates the exact release ID/path/hash
-after reservation, without a nested resolver completion save before the native
+after reservation, then awaits authorization last before entering the callback.
+Even uninstrumented resolutions are guarded. Attempt counters advance only after
+that last guard. There is no nested resolver/guard completion save before the native
 call. Final attachment verification and release validation run after all
 instrumentation persistence; this also covers local File reuse and receipt
-invalidation during earlier completions. Resolver/verifier callbacks must not
+invalidation during earlier completions. Final independent verification is followed
+by exact release resolution and one last authorization before returning verified.
+Resolver/verifier/guard callbacks must not
 add trailing telemetry persistence to these final checks. Their effort remains
 inside the enclosing browser/workflow span.
 The DOM adapter also rechecks the supplied guard after asynchronous file hashing
-and before each native selected-asset callback. No automatic write retry or
-rollback is introduced.
+and each native selected-asset callback, before further readback. This is an
+ordering contract for trusted callback entry, not cross-process atomicity or
+cancellation of in-flight callbacks. Native integrations must recheck authorization
+and exact identity/bytes at their own side-effect boundaries after internal waits.
+No automatic write retry or rollback is introduced.
 
 Reuse performs zero file-picker, upload or path-entry commands. Fresh local hash
 resolution remains mandatory. Exact submitted copies, provenance, hashes and
@@ -184,6 +191,10 @@ are not claimed as exclusive overhead; `exclusive_channels` subtracts the union
 of all recorded direct children, including children starting outside the report
 period of a selected inclusive parent. Missing/interrupted child coverage makes
 that exclusive total unknown even when the child is excluded by the period.
+Every dependency used for subtraction must also have valid wall placement, including
+excluded children. A monotonic/wall-end mismatch makes alignment unknown and
+aggregate duration coverage partial; excluded interrupted children also leave
+coverage partial. Selected sample counts/quantiles retain their original scope.
 Per-channel values are independent observations, not additive CPU
 allocations when differently labeled siblings overlap. Failure/retry time uses interval unions, not nested sums.
 
@@ -286,25 +297,27 @@ verified without checking its observed values and attachment.
 
 Across the entire connected workflow, field writes change 3 to 1; uploads/path
 entries 1 to 0; observations 11 to 4 (including the independent review read);
-record reads 149 to 103; exports 5 to 2. The after run includes one inherited
+record reads 163 to 113; exports 5 to 2. The after run includes one inherited
 submit-recovery export and one bounded checkpoint export. Two matching non-file
 fields are skipped; verified attachment reuse performs no upload/path entry.
 These are actual helper/adapter invocation counts, not separate illustrative loops.
-Both schedules include fresh authorization after durable reservations; the final
-guards have no nested span writes and retain their time in the enclosing span.
+Both schedules include fresh authorization after durable reservations and asynchronous
+resolution. Their RPC guards use the runner's final native guard under
+`spans.authorize`, with no nested span writes; guard effort/read counts remain
+in the enclosing span.
 
 Injected costs are observation 0.2s, field write 0.3s, upload/path 0.9s, record read
 0.01s, export 0.1s and durable span save 0.001s. Instrumented workflow elapsed
-latency is 6.746s before and 2.982s after, with one sample each. Recorded workflow
-wall/active denominators are 6.745s and 2.981s; the final envelope's own completion
+latency is 6.760s before and 3.016s after, with one sample each. Recorded workflow
+wall/active denominators are 6.759s and 3.015s; the final envelope's own completion
 save adds 0.001s outside its measured interval. Each run has one evidence-backed
-**synthetic** confirmation, producing fixture rates of 533.728688 and 1207.648440
-per wall/active hour. First-confirmation latency is 6.407s and 2.667s. These fake
+**synthetic** confirmation, producing fixture rates of 532.623169 and 1194.029851
+per wall/active hour. First-confirmation latency is 6.421s and 2.701s. These fake
 costs, single-sample quantiles and rates make no claim about live performance.
 
 Paired executions disable telemetry only, preserving all guards, verification and
-workflow inputs. Elapsed latency is then 6.390s and 2.730s. Thus injected durable
-telemetry overhead is 0.356s (356 saves) and 0.252s (252 saves), including both
+workflow inputs. Elapsed latency is then 6.530s and 2.830s. Thus injected durable
+telemetry overhead is 0.230s (230 saves) and 0.186s (186 saves), including both
 Python spans and ingested JS rows. Uninstrumented pairs do not claim measured
 active/wall span denominators. Separate fake-clock confirmation/cross-post/retry
 and partial-coverage tests retain zero/unknown and first-confirmation coverage.

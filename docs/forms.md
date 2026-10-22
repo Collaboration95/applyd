@@ -186,8 +186,13 @@ the agent for inspection; computer fallback is never automatically invoked.
 ## Resume boundary and typed outcomes
 
 `resumeResolver()` must call the parent's current resolver, not return a cached
-selection. Execution checks it before any writes and again immediately before
-the upload. Missing/failing/changing resolution stops. No older release fallback
+selection. Execution checks it before any writes and again after each write's
+span reservation, directly before the native call. Receipt verification and
+receipt creation also require the exact current ID/path/hash after reservation.
+These final resolutions must not persist nested telemetry before the native
+operation; their effort remains inside the enclosing span. The final readback
+and attachment checks have no trailing telemetry save before returning verified.
+Missing/failing/changing resolution stops. No older release fallback
 is possible. `upload({input, resume})` is an optional **trusted native file chooser
 bridge**. It must verify the actual chosen release's ID, canonical path and byte
 hash outside browser DOM, choose only that file in the scoped input, and return

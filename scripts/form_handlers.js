@@ -179,10 +179,15 @@
       const counters = Object.fromEntries(Object.keys(measurement.counters || {}).map(key => [key, 0]));
       const checked = async () => {
         await checkGuard(phase);
+        // Resolve inside the reserved operation. A measured resolver's own
+        // completion persistence would reopen the stale-release window.
+        const releases = phase === 'write' ? entry.actions.filter(action => action.kind === 'upload_resume') :
+          measurement.resume ? [measurement.resume] : [];
+        for (const action of releases) await resolve(action, false);
         Object.assign(counters, measurement.counters || {});
         return fn();
       };
-      return telemetry ? telemetry.call(measurement.phase || (phase === 'observe' ? 'form_observation' : phase === 'write' ? 'form_filling' : phase === 'verify_resume' ? 'resume_reuse' : 'resume_resolution'), phase === 'write' || phase === 'observe' ? 'browser' : 'tool', checked, { counters }) : checked();
+      return telemetry && measurement.persist !== false ? telemetry.call(measurement.phase || (phase === 'observe' ? 'form_observation' : phase === 'write' ? 'form_filling' : phase === 'verify_resume' ? 'resume_reuse' : 'resume_resolution'), phase === 'write' || phase === 'observe' ? 'browser' : 'tool', checked, { counters }) : checked();
     }
     async function observe() {
       // No approved values or expected snapshot is passed to the reader.
@@ -191,9 +196,9 @@
       if (layout(observed) !== layout(entry.observation)) fail('page_changed');
       return observed;
     }
-    async function resolve(action) {
+    async function resolve(action, instrumented = true) {
       let selection;
-      try { selection = checkResume(await guarded('resolve_resume', resumeResolver)); }
+      try { selection = checkResume(await (instrumented ? guarded('resolve_resume', resumeResolver) : resumeResolver())); }
       catch (error) { if (error.code === 'guard_refused') throw error; fail('resume_resolution_failed'); }
       if (!equal(selection, action.resume)) fail('resume_changed');
     }
@@ -201,17 +206,17 @@
       let current = await observe();
       // Resolve before any writes, even if the platform already has an attachment.
       for (const action of entry.actions) if (action.kind === 'upload_resume') await resolve(action);
-      async function attachmentMatches(field, action) {
+      async function attachmentMatches(field, action, instrumented) {
         if (field.valid === false) return false;
         if (field.platform_asset) {
           return typeof resumeVerifier === 'function' &&
-            await guarded('verify_resume', () => resumeVerifier({ asset: copy(field.platform_asset), resume: copy(action.resume) })) === true;
+            await guarded('verify_resume', () => resumeVerifier({ asset: copy(field.platform_asset), resume: copy(action.resume) }), { resume: action, persist: instrumented }) === true;
         }
         return matches(field, action);
       }
-      async function verifiedMatch(view, action) {
+      async function verifiedMatch(view, action, instrumented = true) {
         const field = view.fields.find(item => item.field_id === action.field_id);
-        return action.kind === 'upload_resume' ? attachmentMatches(field, action) : matches(field, action);
+        return action.kind === 'upload_resume' ? attachmentMatches(field, action, instrumented) : matches(field, action);
       }
       // Refuse a missing upload bridge before writing unrelated fields.
       for (const action of entry.actions.filter(item => item.kind === 'upload_resume')) {
@@ -238,14 +243,19 @@
           // independent byte/hash readback, before trusting the selected asset.
           const field = current.fields.find(item => item.field_id === action.field_id);
           if (action.kind === 'upload_resume' && field.platform_asset && matches(field, action) && typeof rememberResume === 'function') {
-            await guarded('verify_resume', () => rememberResume({ asset: copy(field.platform_asset), resume: copy(action.resume) }));
+            await guarded('verify_resume', () => rememberResume({ asset: copy(field.platform_asset), resume: copy(action.resume) }), { resume: action });
           }
           if (!await verifiedMatch(current, action)) fail('verification_failed');
         }
         verified.push(action.field_id);
       }
       const final = await observe();
-      for (const action of entry.actions) if (!await verifiedMatch(final, action)) fail('verification_failed');
+      for (const action of entry.actions) if (!await verifiedMatch(final, action, false)) fail('verification_failed');
+      // The last readback/receipt completion can persist too. Revalidate after
+      // all instrumentation before returning a verified result, even for a
+      // local File with no platform receipt callback.
+      await checkGuard('verify_resume');
+      for (const action of entry.actions) if (action.kind === 'upload_resume') await resolve(action, false);
       return freeze({ status: 'verified', snapshot_id: prepared.snapshot_id, written, skipped, verified,
         observed: copy(final) });
     } catch (error) {

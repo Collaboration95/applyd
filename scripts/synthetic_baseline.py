@@ -52,10 +52,11 @@ async function rpc(kind,data){send({kind,data,seconds});const r=await receive();
    if(config.fault==='write_ignored' && action.field_id==='years')field.value=0;
   }};
  function configure(context){telemetry=config.instrumented?T.create({context,processId:'synthetic-node',monotonic:()=>seconds,wall:()=>new Date(Date.parse(config.started_at)+seconds*1000),emit:row=>rpc('span',row)}):null;}
- async function guarded(phase,fn,channel='tool',counters={}){
+ async function currentResume(expected){const current=await rpc('resolve');if(['id','path','sha256'].some(key=>current[key]!==expected[key]))throw Error('resume_changed');}
+ async function guarded(phase,fn,channel='tool',counters={},resume=null,persist=true){
   const attempted=Object.fromEntries(Object.keys(counters).map(key=>[key,0]));
-  const checked=async()=>{await rpc('guard');Object.assign(attempted,counters);return fn();};
-  return telemetry?telemetry.call(phase,channel,checked,{counters:attempted}):checked();
+  const checked=async()=>{await rpc('guard');if(resume)await currentResume(resume);Object.assign(attempted,counters);return fn();};
+  return telemetry && persist?telemetry.call(phase,channel,checked,{counters:attempted}):checked();
  }
  const resolver=()=>rpc('resolve');
  const verifier=request=>rpc('verify',request);
@@ -68,16 +69,17 @@ async function rpc(kind,data){send({kind,data,seconds});const r=await receive();
   const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
   async function observe(){const view=await guarded('form_observation',adapter.observe,'browser',{observations:1});if(layout(view)!==layout(observation))throw Error('page_changed');return view;}
   async function resolve(){if(!same(await guarded('resume_resolution',resolver),config.resume))throw Error('resume_changed');}
-  async function check(view,actions){for(const action of actions){const field=view.fields.find(f=>f.field_id===action.field_id);if(field.valid===false)throw Error('invalid_field');
-   if(action.kind==='upload_resume'){if(!await guarded('resume_reuse',()=>verifier({asset:field.platform_asset,resume:action.resume})))throw Error('unverified_resume');}
+  async function check(view,actions,persist=true){for(const action of actions){const field=view.fields.find(f=>f.field_id===action.field_id);if(field.valid===false)throw Error('invalid_field');
+   if(action.kind==='upload_resume'){if(!await guarded('resume_reuse',()=>verifier({asset:field.platform_asset,resume:action.resume}),'tool',{},action.resume,persist))throw Error('unverified_resume');}
    else if(!same(field.value,action.value))throw Error('readback_mismatch');}}
   await observe();await resolve();const written=[];
   for(const action of plan.actions){const before=await observe();await check(before,written);if(action.kind==='upload_resume')await resolve();
-   await guarded(action.kind==='upload_resume'?'resume_upload':'form_filling',()=>adapter.write(action),'browser',action.kind==='upload_resume'?{uploads:1}:{field_writes:1});
-   const after=await observe();if(action.kind==='upload_resume')await guarded('resume_reuse',()=>remember({asset:after.fields.find(f=>f.field_id===action.field_id).platform_asset,resume:action.resume}));
+   await guarded(action.kind==='upload_resume'?'resume_upload':'form_filling',()=>adapter.write(action),'browser',action.kind==='upload_resume'?{uploads:1}:{field_writes:1},config.resume);
+   const after=await observe();if(action.kind==='upload_resume')await guarded('resume_reuse',()=>remember({asset:after.fields.find(f=>f.field_id===action.field_id).platform_asset,resume:action.resume}),'tool',{},action.resume);
    written.push(action);await check(after,written);
   }
-  const observed=await observe();await check(observed,plan.actions);
+  const observed=await observe();await check(observed,plan.actions,false);
+  await rpc('guard');await currentResume(config.resume);
   return {status:'verified',observed};
  }
  configure(config.context);

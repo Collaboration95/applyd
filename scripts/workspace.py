@@ -562,7 +562,13 @@ def preflight(root, record, now):
         raise ValueError("Application has no prepared submission snapshot")
     if record.get("submissions") or record.get("submission_intent"):
         raise ValueError("Confirmed or unfinished submission requires reconciliation; never replay Submit")
-    settings.check_submission(root, record, now)
+    return validate_submission_snapshot(root, record, now)
+
+
+def validate_submission_snapshot(root, record, now):
+    """Fresh content/policy checks; caller separately proves ready or owned intent."""
+    prepared = record["prepared"]
+    settings.check_submission(root, {**record, "status": "ready"}, now)
     require_eligible(root, record, now)
     check_scope(root, record, record.get("application_url") or record.get("destination_url") or record["canonical_listing_url"], now)
     if record.get("source") != "linkedin_job_page":

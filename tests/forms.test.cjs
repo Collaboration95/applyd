@@ -526,3 +526,44 @@ for (const target of ['initial observation', 'readback observation', 'field writ
     assert.deepEqual(calls,before,'no adapter/resolver/receipt operation may run after STOP');
   });
 }
+
+for (const kind of ['write', 'upload']) for (const outcome of ['refused', 'failed']) {
+  test(`${outcome} ${kind} counts only actual attempted native operations`, async () => {
+    const T=require('../scripts/telemetry.js');
+    const {input}=await scenario(),fake=memory(input),rows=[];
+    let stopped=false,calls=0;
+    const phase=kind==='upload'?'resume_upload':'form_filling';
+    const counter=kind==='upload'?'uploads':'field_writes';
+    const original=fake.adapter.write;
+    fake.adapter.write=async(...args)=>{
+      if ((args[0].kind==='upload_resume')===(kind==='upload')) {calls++;throw Error('synthetic native failure');}
+      return original(...args);
+    };
+    const telemetry=T.create({context:{run_id:'synthetic-run'},processId:'synthetic-process',emit:async row=>{
+      rows.push(row);
+      if(outcome==='refused' && row.phase===phase && row.outcome==='open') {
+        await new Promise(resolve=>setImmediate(()=>{stopped=true;resolve();}));
+      }
+    }});
+    const result=await forms.execute(forms.plan(input),fake.adapter,{...options,telemetry,guard:()=>!stopped});
+    assert.equal(result.reason,outcome==='refused'?'guard_refused':'adapter_failed');
+    const reserved=rows.find(r=>r.phase===phase && r.outcome==='open');
+    const finished=rows.find(r=>r.phase===phase && r.outcome==='failed');
+    assert.equal(reserved.counters[counter],0);
+    assert.equal(finished.counters[counter],outcome==='refused'?0:1);
+    assert.equal(calls,outcome==='refused'?0:1);
+    assert.equal(rows.filter(r=>r.phase===phase && r.outcome!=='open').reduce((n,r)=>n+r.counters[counter],0),calls);
+  });
+}
+
+test('STOP while hashing prevents the subsequent native platform asset callback', async () => {
+  const doc=parse();let stopped=false,selections=0;
+  doc.getElementById('resume').files=[{name:'synthetic.pdf',size:bytes.length,arrayBuffer:async()=>{
+    stopped=true;return bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength);
+  }}];
+  const adapter=forms.createDOMAdapter({getRoot:()=>doc.getElementById('application-dialog'),
+    getScope:()=>({application_id:'app-synthetic',tab_id:'tab',kind:'synthetic_application',url:doc.location.href}),
+    selectedResume:()=>{selections++;return null;}});
+  await assert.rejects(adapter.observeGuarded(()=>{if(stopped)throw Error('guard_refused');}),/guard_refused/);
+  assert.equal(selections,0);
+});

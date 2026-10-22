@@ -70,12 +70,46 @@ def build_runner(root, run_id, brief_file, adapter=None, *, monotonic=None, defe
             if action.kind == Kind.SUBMIT:
                 w.preflight(root, saved, now)
 
+    claimed = {}
+
+    def native_guard(action, now):
+        # A claimed Submit is not new work: validate only this invocation's
+        # durable claim, without recover_submit turning it into a retry.
+        claim = claimed.get(action.sequence) if action.kind == Kind.SUBMIT else None
+        if claim is None:
+            guard(action, now)
+        else:
+            saved = record(action)
+            if (saved.get('status') != 'submission_uncertain' or saved.get('submissions')
+                    or saved.get('submission_intent') != claim
+                    or w.read(root / 'applications/browser-claim.json') != claim
+                    or claim.get('session_id') != run_id
+                    or claim.get('application_id') != action.application_id
+                    or claim.get('attempt_id') != (saved.get('prepared') or {}).get('attempt_id')):
+                raise ValueError('runner_submit_claim_changed')
+            group = next(group for group in batches._groups(w.records(root))
+                         if any(r['application_id'] == action.application_id for r in group))
+            if any(r['application_id'] != action.application_id and
+                   (r.get('submissions') or r.get('status') in {'submitted', 'submission_uncertain'}
+                    or 'submission_intent' in r) for r in group):
+                raise ValueError('runner_submit_alias_changed')
+            w.browser_retry_guard(root, now)
+            w.validate_submission_snapshot(root, saved, now)
+        if (root / 'applications/computer-use.lock').exists():
+            raise ValueError('runner_browser_claimed')
+        # Last check follows all content checks, with no span save afterwards.
+        w.safety.guard(root, run_id, now, 'runner')
+
     def begin(action, now):
         observe = getattr(adapter, "observe_url", None)
         if not callable(observe):
             raise ValueError("runner_observed_identity_required")
-        observed = spans.LiveAdapter(adapter).observe_url(action)
-        return w.begin_submit(root, action.application_id, observed, run_id, now, deferred=True).get("click_authorized") is True
+        observed = spans.LiveAdapter(adapter, guard=lambda: native_guard(action, controller.telemetry.wall())).observe_url(action)
+        at = controller.telemetry.wall()
+        authorized = w.begin_submit(root, action.application_id, observed, run_id, at, deferred=True).get("click_authorized") is True
+        if authorized:
+            claimed[action.sequence] = w.read(root / 'applications/browser-claim.json')
+        return authorized
 
     def verified_file(path, expected):
         return w.digest(private_file(path)) == expected
@@ -146,5 +180,6 @@ def build_runner(root, run_id, brief_file, adapter=None, *, monotonic=None, defe
             return w.recover(root, w.export_csv)
         return {"ok": True, "status": "unchanged"}
 
-    hooks = Hooks(lambda: w.writer(root), recover, queue, guard, begin, verify, failure, answer_reuse, checkpoint)
-    return Runner(root, run_id, hooks=hooks, adapter=adapter, monotonic=monotonic)
+    hooks = Hooks(lambda: w.writer(root), recover, queue, guard, begin, verify, failure, answer_reuse, checkpoint, native_guard)
+    controller = Runner(root, run_id, hooks=hooks, adapter=adapter, monotonic=monotonic)
+    return controller

@@ -6,6 +6,7 @@ Only independently verified uploaded/downloaded bytes may establish a receipt.
 from datetime import timedelta
 import hashlib
 import settings
+import spans
 from resolve_resume import resolve, timestamp
 
 
@@ -91,7 +92,7 @@ class Boundary:
         self.guard, self.clock, self.read_asset_bytes = guard, clock, read_asset_bytes
 
     def _guard(self):
-        if self.guard() is not True:
+        if spans.authorize(self.guard) is not True:
             raise ValueError('resume_guard_refused')
 
     def resolve(self):

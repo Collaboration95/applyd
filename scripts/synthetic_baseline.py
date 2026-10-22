@@ -53,8 +53,9 @@ async function rpc(kind,data){send({kind,data,seconds});const r=await receive();
   }};
  function configure(context){telemetry=config.instrumented?T.create({context,processId:'synthetic-node',monotonic:()=>seconds,wall:()=>new Date(Date.parse(config.started_at)+seconds*1000),emit:row=>rpc('span',row)}):null;}
  async function guarded(phase,fn,channel='tool',counters={}){
-  const checked=async()=>{await rpc('guard');return fn();};
-  return telemetry?telemetry.call(phase,channel,checked,{counters}):checked();
+  const attempted=Object.fromEntries(Object.keys(counters).map(key=>[key,0]));
+  const checked=async()=>{await rpc('guard');Object.assign(attempted,counters);return fn();};
+  return telemetry?telemetry.call(phase,channel,checked,{counters:attempted}):checked();
  }
  const resolver=()=>rpc('resolve');
  const verifier=request=>rpc('verify',request);

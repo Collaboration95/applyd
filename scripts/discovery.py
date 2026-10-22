@@ -53,10 +53,10 @@ def discover_saved(adapter, *, read_records, policies, guard, limit=20):
     if type(limit) is not int or not 1 <= limit <= 100:
         raise ValueError('invalid_card_bound')
     def allowed():
-        if guard() is not True:
+        if spans.authorize(guard) is not True:
             raise ValueError('discovery_guard_refused')
-    allowed()
     with spans.span('saved_discovery', 'browser'):
+        allowed()
         cards = adapter.saved_cards(limit)
     if not isinstance(cards, list) or len(cards) > limit or any(c.get('source') != 'saved' for c in cards):
         raise ValueError('saved_card_contract')
@@ -65,14 +65,14 @@ def discover_saved(adapter, *, read_records, policies, guard, limit=20):
     for row in initial['cards']:
         if row['decision'] != 'inspect_listing':
             continue
-        allowed()
-        fresh = screen_cards(read_records(), cards, policies(), limit=limit)
-        decision = next(r['decision'] for r in fresh['cards'] if r['index']==row['index'])
-        if decision != 'inspect_listing':
-            continue
         with spans.span('navigation', 'browser'):
+            allowed()
+            fresh = screen_cards(read_records(), cards, policies(), limit=limit)
+            if next(r['decision'] for r in fresh['cards'] if r['index']==row['index']) != 'inspect_listing':
+                continue
+            allowed()  # screening can persist nested spans too
             listing = adapter.open_listing(cards[row['index']])
-        allowed()
         with spans.span('listing_capture', 'tool'):
+            allowed()
             captured.append(adapter.capture(listing))
     return captured

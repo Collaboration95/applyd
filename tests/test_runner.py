@@ -74,7 +74,9 @@ class Parent:
         assert self.locked
         self.calls.append("guard")
         if action.application_id:
-            if retry_policy.check_retry(self.get(action.application_id), now).decision.value != "eligible":
+            saved = self.get(action.application_id)
+            owned_submit = action.kind == r.Kind.SUBMIT and saved.get("submission_intent") == {"attempt_id": "synthetic"}
+            if not owned_submit and retry_policy.check_retry(saved, now).decision.value != "eligible":
                 raise ValueError("Synthetic gate refusal")
 
     def begin(self, action, now):
@@ -124,7 +126,7 @@ class Parent:
 
     def adapter(self, action):
         assert self.locked
-        assert self.calls[-1] == ("begin_submit" if action.kind == r.Kind.SUBMIT else "guard")
+        assert self.calls[-1] == "guard"
         self.calls.append("adapter")
         w.atomic_json(self.root / f"applications/evidence/result-{action.sequence}.json", {"observed": True})
         return r.Observation(self.ref)

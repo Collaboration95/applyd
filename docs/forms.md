@@ -143,6 +143,11 @@ await adapter.write(command, expectedScope); // only minted commands
 adapter.canUpload === true; // explicit native upload capability, not success
 ```
 
+The DOM adapter additionally exposes `observeGuarded(guard)`: the executor passes
+only a fresh guard callback, so asynchronous hashing and each platform selected-asset
+read can recheck STOP immediately before native work. Ordinary adapters retain
+the zero-argument `observe()` contract. No approved values are passed to readers.
+
 `observe()` must read actual current values, selected options, file evidence and
 dialog identity independently. Never return the expected values as observations.
 An observation is `{scope, fields}`. Scope contains nonempty `application_id`,

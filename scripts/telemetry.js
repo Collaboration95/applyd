@@ -34,11 +34,16 @@
         outcome: 'open', coverage: 'open', counters: options.counters || {}, model: options.model ? { provider: options.model.provider, model: options.model.model, configuration: options.model.configuration, output_tokens: null, generation_seconds: null } : null };
       await send(row); // reservation must be acknowledged before crossing boundary
       try {
+        const generationStart = monotonic();
         const value = await fn({ ...context, parent_id: row.span_id });
+        const generationSeconds = monotonic() - generationStart;
         if (row.model && channel === 'model' && typeof options.outputUsage === 'function') {
           // Usage extraction must not change or replay an already completed tool.
-          try { const tokens = options.outputUsage(value);
-            if (Number.isSafeInteger(tokens) && tokens >= 0) row.model.output_tokens = tokens;
+          try { const tokens = await options.outputUsage(value);
+            if (Number.isSafeInteger(tokens) && tokens >= 0) {
+              row.model.output_tokens = tokens;
+              if (Number.isFinite(generationSeconds) && generationSeconds >= 0) row.model.generation_seconds = generationSeconds;
+            }
           } catch { /* unmeasured usage remains null */ }
         }
         row.outcome = 'ok'; return value;
@@ -47,7 +52,7 @@
         row.ended_at = stamp(); row.duration_seconds = monotonic() - start;
         row.coverage = Number.isFinite(row.duration_seconds) && row.duration_seconds >= 0 ? 'measured' : 'unknown';
         if (row.coverage === 'unknown') row.duration_seconds = null;
-        if (row.model && channel === 'model' && row.model.output_tokens !== null && row.coverage === 'measured') row.model.generation_seconds = row.duration_seconds;
+        if (row.model && row.coverage !== 'measured') row.model.generation_seconds = null;
         await send(row); // never call fn again when persistence fails
       }
     }

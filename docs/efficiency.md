@@ -45,6 +45,13 @@ Asynchronous asset/hash observations reread current native field values and
 recheck input identity/layout. Guards run inside each measured callback, after its
 awaited durable span reservation and immediately before every observe, resolver, receipt operation,
 verification and write. STOP during telemetry persistence blocks the operation.
+Every write and receipt callback also revalidates the exact release ID/path/hash
+after reservation, without a nested resolver completion save before the native
+call. Final attachment verification and release validation run after all
+instrumentation persistence; this also covers local File reuse and receipt
+invalidation during earlier completions. Resolver/verifier callbacks must not
+add trailing telemetry persistence to these final checks. Their effort remains
+inside the enclosing browser/workflow span.
 The DOM adapter also rechecks the supplied guard after asynchronous file hashing
 and before each native selected-asset callback. No automatic write retry or
 rollback is introduced.
@@ -174,8 +181,10 @@ each process, excluding nested samples with a measured same-process ancestor.
 This inclusive process effort includes explicit waits and orchestration, and may
 exceed critical-path active time; it is not CPU time. Inclusive orchestration spans
 are not claimed as exclusive overhead; `exclusive_channels` subtracts the union
-of observed direct children. Missing child coverage makes that exclusive total
-unknown. Per-channel values are independent observations, not additive CPU
+of all recorded direct children, including children starting outside the report
+period of a selected inclusive parent. Missing/interrupted child coverage makes
+that exclusive total unknown even when the child is excluded by the period.
+Per-channel values are independent observations, not additive CPU
 allocations when differently labeled siblings overlap. Failure/retry time uses interval unions, not nested sums.
 
 Durations always come from monotonic clocks. Cross-process overlap placement
@@ -211,8 +220,10 @@ identities/transitive aliases and cheap current/frozen header exclusions before
 opening details. Confirmed/uncertain aliases, including empty intents, are
 excluded; existing queued identities stay with the queue; repeated cards are
 collapsed. Ambiguous/incomplete headers still require full listing capture and
-eligibility. Each open rechecks fresh guard, identities and policies. The adapter
-must itself bound observation, open only the card's listing, and call existing
+eligibility. Each open rechecks fresh guard, identities and policies after the
+measured screen's completion. This final full decision suppresses nested
+telemetry writes, so no completion persistence intervenes before navigation.
+The adapter must itself bound observation, open only the card's listing, and call existing
 scope/freshness/capture gates. No profile navigation or broad search is added.
 
 The runner queue uses `workspace.planning_snapshot` only while holding the writer
@@ -275,7 +286,7 @@ verified without checking its observed values and attachment.
 
 Across the entire connected workflow, field writes change 3 to 1; uploads/path
 entries 1 to 0; observations 11 to 4 (including the independent review read);
-record reads 131 to 91; exports 5 to 2. The after run includes one inherited
+record reads 149 to 103; exports 5 to 2. The after run includes one inherited
 submit-recovery export and one bounded checkpoint export. Two matching non-file
 fields are skipped; verified attachment reuse performs no upload/path entry.
 These are actual helper/adapter invocation counts, not separate illustrative loops.
@@ -284,16 +295,16 @@ guards have no nested span writes and retain their time in the enclosing span.
 
 Injected costs are observation 0.2s, field write 0.3s, upload/path 0.9s, record read
 0.01s, export 0.1s and durable span save 0.001s. Instrumented workflow elapsed
-latency is 6.562s before and 2.858s after, with one sample each. Recorded workflow
-wall/active denominators are 6.561s and 2.857s; the final envelope's own completion
+latency is 6.746s before and 2.982s after, with one sample each. Recorded workflow
+wall/active denominators are 6.745s and 2.981s; the final envelope's own completion
 save adds 0.001s outside its measured interval. Each run has one evidence-backed
-**synthetic** confirmation, producing fixture rates of 548.696845 and 1260.063003
-per wall/active hour. First-confirmation latency is 6.223s and 2.543s. These fake
+**synthetic** confirmation, producing fixture rates of 533.728688 and 1207.648440
+per wall/active hour. First-confirmation latency is 6.407s and 2.667s. These fake
 costs, single-sample quantiles and rates make no claim about live performance.
 
 Paired executions disable telemetry only, preserving all guards, verification and
-workflow inputs. Elapsed latency is then 6.210s and 2.610s. Thus injected durable
-telemetry overhead is 0.352s (352 saves) and 0.248s (248 saves), including both
+workflow inputs. Elapsed latency is then 6.390s and 2.730s. Thus injected durable
+telemetry overhead is 0.356s (356 saves) and 0.252s (252 saves), including both
 Python spans and ingested JS rows. Uninstrumented pairs do not claim measured
 active/wall span denominators. Separate fake-clock confirmation/cross-post/retry
 and partial-coverage tests retain zero/unknown and first-confirmation coverage.

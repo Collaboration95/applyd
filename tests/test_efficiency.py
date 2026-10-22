@@ -658,3 +658,76 @@ class NativeRefusalContractTests(unittest.TestCase):
                     self.assertEqual(calls,[])
                     if variant=='nested':
                         self.assertEqual(spans.summarize([],spans.load(self.root))['counters']['uploads'],0)
+
+class DiscoveryCompletionRegressionTests(unittest.TestCase):
+    setUp = SpanTests.setUp
+
+    def test_final_screen_completion_changes_block_navigation(self):
+        for change in ('confirmation', 'intent', 'uncertain', 'policy', 'STOP'):
+            with self.subTest(change=change):
+                self.setUp(); records=[]; opens=[]; completions=[]; changed=[]
+                cards=[{**job('one'), 'source':'saved', 'company':'Blocked Example'}]
+                policies=[settings.validate_settings({})]
+                class Adapter:
+                    def saved_cards(self, limit): return cards
+                    def open_listing(self, card): opens.append(1); return card
+                    def capture(self, listing): return listing
+                save=self.rec._save
+                def persist():
+                    save()
+                    row=self.rec.rows[-1]
+                    if row['phase']!='card_screening' or row['outcome']!='ok': return
+                    completions.append(1)
+                    if len(completions)!=2: return
+                    changed.append(1)
+                    if change=='policy': policies[0]=settings.validate_settings({'company_blocklist':['Blocked']})
+                    elif change!='STOP':
+                        state={'confirmation':{'submissions':[confirmation()]},
+                               'intent':{'submission_intent':{}},
+                               'uncertain':{'status':'submission_uncertain'}}[change]
+                        # Alias by canonical URL, not a candidate's local ID.
+                        records.append(job('alias', listing_url=cards[0]['listing_url'], **state))
+                with patch.object(self.rec,'_save',persist), self.rec.span('workflow'):
+                    run=lambda:discovery.discover_saved(Adapter(), read_records=lambda:records,
+                        policies=lambda:policies, guard=lambda:not (changed and change=='STOP'))
+                    if change=='STOP':
+                        with self.assertRaisesRegex(ValueError,'discovery_guard_refused'): run()
+                    else: self.assertEqual(run(),[])
+                self.assertEqual(changed,[1]); self.assertEqual(opens,[])
+
+    def test_final_decision_has_no_completion_persistence_before_navigation(self):
+        events=[]; save=self.rec._save
+        def persist(): events.append('save'); save()
+        def policies(): events.append('policy'); return [settings.validate_settings({})]
+        class Adapter:
+            def saved_cards(self, limit): return [{**job('one'), 'source':'saved'}]
+            def open_listing(self, card): events.append('native'); return card
+            def capture(self, listing): return listing
+        with patch.object(self.rec,'_save',persist), self.rec.span('workflow'):
+            discovery.discover_saved(Adapter(),read_records=lambda:[],policies=policies,guard=lambda:True)
+        self.assertEqual(events[events.index('native')-1],'policy')
+
+class ExclusivePeriodRegressionTests(unittest.TestCase):
+    setUp = SpanTests.setUp
+
+    def rows(self):
+        with self.rec.span('workflow','orchestration') as parent: self.clock.advance(10)
+        child={**parent, 'span_id':'child', 'parent_id':parent['span_id'],
+               'channel':'browser', 'phase':'navigation', 'process_id':'native',
+               'started_at':(NOW+timedelta(seconds=2)).isoformat(),
+               'ended_at':(NOW+timedelta(seconds=8)).isoformat(), 'duration_seconds':6}
+        return [parent,child]
+
+    def test_period_excluded_completed_child_subtracts_from_full_parent(self):
+        rows=self.rows()
+        report=spans.summarize([],rows,start=NOW,end=NOW+timedelta(seconds=1))
+        self.assertEqual(report['spans'],1)
+        self.assertEqual(next(r['seconds'] for r in report['exclusive_channels'] if r['channel']=='orchestration'),4)
+        self.assertEqual(next(r['samples'] for r in report['phases'] if r['phase']=='navigation'),0)
+
+    def test_period_excluded_interrupted_or_missing_duration_child_keeps_overhead_unknown(self):
+        for coverage,outcome in [('open','open'),('unknown','failed')]:
+            with self.subTest(coverage=coverage):
+                rows=self.rows(); rows[-1].update(coverage=coverage,outcome=outcome,duration_seconds=None,ended_at=None)
+                report=spans.summarize([],rows,start=NOW,end=NOW+timedelta(seconds=1))
+                self.assertIsNone(next(r['seconds'] for r in report['exclusive_channels'] if r['channel']=='orchestration'))

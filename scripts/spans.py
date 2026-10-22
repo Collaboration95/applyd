@@ -472,7 +472,9 @@ def summarize(records, rows, *, start=None, end=None):
     exclusive_unknown = set()
     for r in rows:
         if not measured(r): continue
-        children = [c for c in rows if c['parent_id']==r['span_id'] and c['run_id']==r['run_id']]
+        # Selected parents retain their full duration, so all recorded direct
+        # dependencies apply, including children starting outside this period.
+        children = [c for c in all_rows if c['parent_id']==r['span_id'] and c['run_id']==r['run_id']]
         if any(not measured(c) for c in children):
             exclusive_unknown.add(r['channel']); continue
         a = batches.validate_event_time(r['started_at']); b = a + timedelta(seconds=r['duration_seconds'])

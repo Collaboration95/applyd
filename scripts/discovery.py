@@ -70,7 +70,18 @@ def discover_saved(adapter, *, read_records, policies, guard, limit=20):
             fresh = screen_cards(read_records(), cards, policies(), limit=limit)
             if next(r['decision'] for r in fresh['cards'] if r['index']==row['index']) != 'inspect_listing':
                 continue
-            allowed()  # screening can persist nested spans too
+            # The measured screen's completion can change identities/policy.
+            # Repeat the full decision without nested telemetry persistence at
+            # the native boundary, just as for the final authorization check.
+            def can_open_current():
+                allowed()
+                current = screen_cards(read_records(), cards, policies(), limit=limit)
+                if next(r['decision'] for r in current['cards'] if r['index']==row['index']) != 'inspect_listing':
+                    return False
+                allowed()
+                return True
+            if not spans.authorize(can_open_current):
+                continue
             listing = adapter.open_listing(cards[row['index']])
         with spans.span('listing_capture', 'tool'):
             allowed()

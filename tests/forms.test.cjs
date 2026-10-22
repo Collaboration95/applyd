@@ -567,3 +567,91 @@ test('STOP while hashing prevents the subsequent native platform asset callback'
   await assert.rejects(adapter.observeGuarded(()=>{if(stopped)throw Error('guard_refused');}),/guard_refused/);
   assert.equal(selections,0);
 });
+
+for (const target of ['field write', 'upload', 'verify', 'remember']) for (const change of ['replacement', 'changed-bytes']) {
+  test(`${change} during ${target} reservation blocks the stale native operation`, async () => {
+    const T = require('../scripts/telemetry.js');
+    const { input } = await scenario();
+    if (target !== 'field write') {
+      input.observation.fields = input.observation.fields.filter(f => f.type === 'file');
+      input.bindings = input.bindings.filter(b => b.field_id === 'resume');
+      input.approved.answers = [];
+    }
+    const fake = memory(input), file = fake.state.fields.find(f => f.type === 'file');
+    const asset = {account_id:'synthetic', asset_id:'opaque', revision:'1'};
+    if (target === 'verify') { file.platform_asset = asset; file.valid = true; }
+    let current = clone(resume), content = bytes, changed = false;
+    const calls = [], events = [];
+    const write = fake.adapter.write;
+    fake.adapter.write = async (...args) => {
+      calls.push({kind:'upload', changed}); events.push('upload');
+      await write(...args);
+      if (target === 'remember') file.platform_asset = asset;
+    };
+    const telemetry = T.create({context:{run_id:'synthetic'}, processId:'fixture', emit:async row => {
+      events.push('persist');
+      if (!changed && row.outcome === 'open' && row.phase === (target === 'field write' ? 'form_filling' : target === 'upload' ? 'resume_upload' : 'resume_reuse')) {
+        await new Promise(resolve => setImmediate(() => {
+          changed = true;
+          if (change === 'replacement') current = {...resume, id:'replacement', path:'/synthetic/replacement.pdf'};
+          else content = Buffer.from('changed synthetic bytes');
+          resolve();
+        }));
+      }
+    }});
+    const result = await forms.execute(forms.plan(input), fake.adapter, {guard, telemetry,
+      resumeResolver:() => {
+        events.push('resolve');
+        if (createHash('sha256').update(content).digest('hex') !== current.sha256) throw Error('hash mismatch');
+        return clone(current);
+      },
+      resumeVerifier:() => {calls.push({kind:'verify', changed}); return true;},
+      rememberResume:() => {calls.push({kind:'remember', changed}); return true;}
+    });
+    assert.equal(changed, true);
+    assert.equal(result.reason, change === 'replacement' ? 'resume_changed' : 'resume_resolution_failed');
+    assert.equal(calls.some(call => call.changed), false, 'no stale upload or receipt callback');
+    if (target !== 'remember') assert.deepEqual(fake.writes, []);
+    // A successful native upload also gets an exact fresh resolution after its
+    // reservation, with no completion write between resolution and upload.
+    for (let index=0; index<events.length; index++) if (events[index] === 'upload') assert.equal(events[index-1], 'resolve');
+  });
+}
+
+for (const change of ['replacement', 'changed-bytes', 'STOP']) {
+  test(`${change} during final local-file readback completion prevents verified result`, async () => {
+    const T = require('../scripts/telemetry.js');
+    const {input} = await scenario();
+    input.observation.fields = input.observation.fields.filter(f => f.type === 'file');
+    input.bindings = input.bindings.filter(b => b.field_id === 'resume'); input.approved.answers = [];
+    const fake = memory(input); let changed=false, observations=0;
+    const telemetry=T.create({context:{run_id:'synthetic'},processId:'fixture',emit:async row=>{
+      if(row.phase==='form_observation' && row.outcome==='ok' && ++observations===3) changed=true;
+    }});
+    const result=await forms.execute(forms.plan(input),fake.adapter,{guard:()=>!(changed && change==='STOP'),telemetry,
+      resumeResolver:()=>{
+        if(changed && change==='changed-bytes') throw Error('hash mismatch');
+        return {...resume,id:changed && change==='replacement'?'replacement':resume.id};
+      }});
+    assert.equal(changed,true); assert.equal(fake.writes.length,1);
+    assert.equal(result.reason,change==='STOP'?'guard_refused':change==='replacement'?'resume_changed':'resume_resolution_failed');
+  });
+}
+
+test('receipt invalidated during reuse completion is rechecked without a trailing persistence window', async () => {
+  const T=require('../scripts/telemetry.js');
+  const {input}=await scenario();
+  input.observation.fields=input.observation.fields.filter(f=>f.type==='file');
+  input.bindings=input.bindings.filter(b=>b.field_id==='resume'); input.approved.answers=[];
+  const fake=memory(input), events=[]; let valid=true;
+  fake.state.fields[0].platform_asset={account_id:'synthetic',asset_id:'opaque',revision:'1'};
+  fake.state.fields[0].valid=true;
+  const telemetry=T.create({context:{run_id:'synthetic'},processId:'fixture',emit:async row=>{
+    events.push('persist');
+    if(row.phase==='resume_reuse' && row.outcome==='ok' && row.counters.uploads===0) valid=false;
+  }});
+  const result=await forms.execute(forms.plan(input),fake.adapter,{...options,telemetry,
+    resumeVerifier:()=>{events.push('verify');return valid;}});
+  assert.equal(result.reason,'verification_failed'); assert.deepEqual(fake.writes,[]);
+  assert.equal(events.at(-1),'verify');
+});

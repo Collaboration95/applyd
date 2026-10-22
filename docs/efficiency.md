@@ -42,8 +42,10 @@ independent readback. Each post-write observation also becomes the next operatio
 input; initial + each write's readback + final observation bounds outer reads to
 `writes + 2`. Earlier skipped/written values are checked for reactive resets.
 Asynchronous asset/hash observations reread current native field values and
-recheck input identity/layout. Guards still run before every observe, resolver,
-verification and write. No automatic write retry or rollback is introduced.
+recheck input identity/layout. Guards run inside each measured callback, after its
+awaited durable span reservation and immediately before every observe, resolver, receipt operation,
+verification and write. STOP during telemetry persistence blocks the operation.
+No automatic write retry or rollback is introduced.
 
 Reuse performs zero file-picker, upload or path-entry commands. Fresh local hash
 resolution remains mandatory. Exact submitted copies, provenance, hashes and
@@ -134,10 +136,16 @@ Phase/channel medians use midpoint for even samples. P95 uses nearest rank:
 IDs. Phase samples are
 inclusive observations and are never added to their parent's totals.
 
-Critical-path measured active time is the union of measured intervals after subtracting
-explicit user/blocked waits within their own process; a waiting process cannot
-erase another process's active work. Concurrent processes cannot inflate
-this denominator. Summed process effort is the sum of interval unions within
+Critical-path measured active time is the union of measured intervals after
+subtracting explicit user/blocked waits from each inclusive ancestor along the
+recorded dependency chain, including ancestors in other processes. An enclosing
+Python workflow cannot count a browser child's blocking wait as active work.
+Independently measured concurrent siblings remain work, including explicit async
+siblings in the same process. Overlapping waits/fragments are unioned, never
+added twice. Unknown waits or orphaned dependencies leave active time unknown.
+Observed descendant waits still apply to a selected inclusive parent when the
+wait starts outside the report period. Concurrent processes cannot inflate this
+denominator. Summed process effort is the sum of interval unions within
 each process, excluding nested samples with a measured same-process ancestor.
 This inclusive process effort includes explicit waits and orchestration, and may
 exceed critical-path active time; it is not CPU time. Inclusive orchestration spans
@@ -153,8 +161,12 @@ uses wall starts plus those measured lengths, with explicit
 durations unknown; unknown waits also make active time unknown. Aligned wall
 clocks are an explicit placement assumption, never proof of synchronized processes.
 Wall-run hours sum each run's first-to-last recorded workflow envelope (including
-gaps); an interrupted workflow makes that denominator unknown. Time to first
-confirmation is explicitly a wall timeline delta, not reconstructed process effort.
+gaps); an interrupted workflow makes that denominator unknown. Each execute
+call's workflow envelope includes its final bounded checkpoint export, including
+STOP and ordinary failure paths. Reservation/completion acquire the writer;
+actions retain their own writer boundaries. Export failure remains a separate
+`export_outcome`, never replacing an authoritative action result or replaying it.
+Time to first confirmation is explicitly a wall timeline delta, not reconstructed process effort.
 
 Unique confirmations use the existing evidence-backed transitive identity groups
 and earliest confirmation across all history. Later aliases/retries do not earn
@@ -193,12 +205,15 @@ expiry and provenance rules remain authoritative. Ordinary previously authorized
 handling does not create another consent question; unknown material declarations
 still do. No fuzzy answer inference or broad consent default was added.
 
-All runner mutations use existing deferred-export state. `Hooks.checkpoint` in
-the workspace integration repairs dirty CSV/dashboard once at bounded execute
-completion/stop; `Runner.export_outcome` exposes its separate result. A process
+Runner adapter mutations can use existing deferred-export state.
+`Hooks.checkpoint` in the workspace integration repairs dirty CSV/dashboard once
+at bounded execute completion/stop; `Runner.export_outcome` exposes its separate
+result. The existing `work_guard` submit-recovery path can also trigger a rebuild
+inside confirmation recording; the connected fixture counts this additional
+export rather than claiming all derived work is deferred. A process
 interruption retains the durable dirty marker for existing export-only recovery.
-No confirmation or submit intent waits for an export. CLI remains export-recoverable
-and explicit `--defer-export` continues to defer its final rebuild.
+The final checkpoint does not delay authoritative confirmation or submit-intent
+persistence. CLI remains export-recoverable and explicit `--defer-export` continues to defer its final rebuild.
 
 ## Reproducible synthetic baseline and verification
 
@@ -211,26 +226,54 @@ python3 scripts/check_publication.py
 ```
 
 The deterministic output is checked in as `synthetic-baseline.json` and compared
-by a regression. Both variants use the same four-field input (one mismatch),
-exact synthetic release and no model/provider calls. The original unconditional
-write/observation schedule is frozen in the script and runs the same fake adapter;
-the after variant invokes the current executor. Record/export measurements call
-actual helpers in temporary initialized workspaces. Counts change as follows:
-field writes 3 to 1; uploads/path entries 1 to 0; observations 10 to 3; record reads
-6 to 2 (including exports); exports 3 to 1. Two matching non-file fields are skipped.
+by regression. Both schedules initialize identical temporary workspaces with the
+same four native fields (one mismatch), saved answers, released synthetic resume,
+independent synthetic platform bytes and a real `verified_download` receipt.
+No model/provider calls occur. The private temporary workspace is discarded.
 
-Fake operation costs produce form-step latency 3.8s before and 0.9s after, with
-one sample each; other helper costs are not silently included in that latency.
-The instrumented form emits 24 reservations/completions at an injected 1ms sink
-cost each (0.024s overhead). This is deterministic fixture time, not live timing.
-There are zero confirmations because the fixture cannot submit; throughput is
-zero with explicit denominators, and first-confirmation latency is unknown.
-Separate fake-clock confirmation/cross-post/retry tests verify positive counts,
-partial coverage and first-confirmation selection.
+The connected adapter runs `Runner.execute` through actual answer preparation,
+frozen submitted copies/hashes, form execution, independent review, fresh
+preflight and URL observation, durable submit intent, a local synthetic
+confirmation event, evidence verification and final checkpoint. A local Node RPC
+transport calls the real guarded Python resume `Boundary` and `Recorder.ingest`.
+Every imported JS reservation/completion has its actual Python browser parent and
+application/attempt/action correlation. There is no authenticated driver or live
+submission. Regression faults prove both schedules refuse failed field readback
+and an independent review mismatch; a corrupt receipt triggers verified upload.
+
+The reference freezes the original unconditional form write/observation schedule,
+uncached planning and immediate mutation exports. It uses the same adapter input,
+current guards/resolver, exact layout/readback and reactive-reset checks, actual
+platform-byte receipt verification, independent review and submit gates. It is a
+safe executable reference schedule, not a historical implementation timing claim.
+Success is derived from checks and durable evidence; no branch declares a form
+verified without checking its observed values and attachment.
+
+Across the entire connected workflow, field writes change 3 to 1; uploads/path
+entries 1 to 0; observations 11 to 4 (including the independent review read);
+record reads 109 to 73; exports 5 to 2. The after run includes one inherited
+submit-recovery export and one bounded checkpoint export. Two matching non-file
+fields are skipped; verified attachment reuse performs no upload/path entry.
+These are actual helper/adapter invocation counts, not separate illustrative loops.
+
+Injected costs are observation 0.2s, field write 0.3s, upload/path 0.9s, record read
+0.01s, export 0.1s and durable span save 0.001s. Instrumented workflow elapsed
+latency is 6.390s before and 2.714s after, with one sample each. Recorded workflow
+wall/active denominators are 6.389s and 2.713s; the final envelope's own completion
+save adds 0.001s outside its measured interval. Each run has one evidence-backed
+**synthetic** confirmation, producing fixture rates of 563.468461 and 1326.944342
+per wall/active hour. First-confirmation latency is 6.051s and 2.399s. These fake
+costs, single-sample quantiles and rates make no claim about live performance.
+
+Paired executions disable telemetry only, preserving all guards, verification and
+workflow inputs. Elapsed latency is then 5.990s and 2.430s. Thus injected durable
+telemetry overhead is 0.400s (400 saves) and 0.284s (284 saves), including both
+Python spans and ingested JS rows. Uninstrumented pairs do not claim measured
+active/wall span denominators. Separate fake-clock confirmation/cross-post/retry
+and partial-coverage tests retain zero/unknown and first-confirmation coverage.
 
 `--measure-overhead` additionally measures 20 paired identical local arithmetic
 callbacks with/without real durable span persistence using host `perf_counter`.
 It prints only aggregate median/p95 and sample counts; no raw traces or paths.
-A local synthetic check measured roughly 1.43ms median and 2.55ms p95 added
-persistence time. These host-dependent values are not assertions or a live speedup.
-Live throughput, upload behavior and model speed remain unvalidated.
+These host-dependent values are not assertions or a live speedup. Live throughput,
+upload behavior and model speed remain unvalidated.

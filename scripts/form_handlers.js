@@ -169,10 +169,15 @@
     plans.delete(prepared);
     let observed = null;
     async function guarded(phase, fn, measurement = {}) {
-      let allowed = false;
-      try { allowed = await guard(phase); } catch { fail('guard_refused'); }
-      if (allowed !== true) fail('guard_refused');
-      return telemetry ? telemetry.call(measurement.phase || (phase === 'observe' ? 'form_observation' : phase === 'write' ? 'form_filling' : phase === 'verify_resume' ? 'resume_reuse' : 'resume_resolution'), phase === 'write' || phase === 'observe' ? 'browser' : 'tool', fn, { counters: measurement.counters || {} }) : fn();
+      // Reservation persistence may await an external transport. Check fresh
+      // authorization after that wait, at the actual operation boundary.
+      const checked = async () => {
+        let allowed = false;
+        try { allowed = await guard(phase); } catch { fail('guard_refused'); }
+        if (allowed !== true) fail('guard_refused');
+        return fn();
+      };
+      return telemetry ? telemetry.call(measurement.phase || (phase === 'observe' ? 'form_observation' : phase === 'write' ? 'form_filling' : phase === 'verify_resume' ? 'resume_reuse' : 'resume_resolution'), phase === 'write' || phase === 'observe' ? 'browser' : 'tool', checked, { counters: measurement.counters || {} }) : checked();
     }
     async function observe() {
       // No approved values or expected snapshot is passed to the reader.

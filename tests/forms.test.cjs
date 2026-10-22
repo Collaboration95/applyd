@@ -487,3 +487,42 @@ test('async selected-asset observation cannot hide a concurrent field reset', as
     selectedResume:async()=>{read++;doc.getElementById('full-name').value='Actual reactive value';return {account_id:'synthetic',asset_id:'opaque',revision:'1'};}});
   const observed=await adapter.observe();assert.equal(observed.fields[0].value,'Actual reactive value');assert.equal(read,1);
 });
+
+for (const target of ['initial observation', 'readback observation', 'field write', 'upload', 'resolve', 'verify', 'remember']) {
+  test(`STOP during durable reservation prevents ${target}`, async () => {
+    const T = require('../scripts/telemetry.js');
+    const { input } = await scenario(), fake = memory(input);
+    const asset = {account_id: 'synthetic', asset_id: 'opaque', revision: '1'};
+    const file = fake.state.fields.find(f => f.type === 'file');
+    if (target === 'verify') file.platform_asset = asset;
+    const calls = [];
+    let stopped = false, paused = false, observations = 0;
+    const originalObserve = fake.adapter.observe, originalWrite = fake.adapter.write;
+    fake.adapter.observe = async () => { calls.push('observe'); return originalObserve(); };
+    fake.adapter.write = async (...args) => {
+      calls.push(args[0].kind === 'upload_resume' ? 'upload' : 'write');
+      await originalWrite(...args);
+      if (target === 'remember' && args[0].kind === 'upload_resume') file.platform_asset = asset;
+    };
+    const desired = {'initial observation':'form_observation', 'readback observation':'form_observation',
+      'field write':'form_filling', upload:'resume_upload', resolve:'resume_resolution', verify:'resume_reuse', remember:'resume_reuse'}[target];
+    let before;
+    const telemetry = T.create({context:{run_id:'synthetic-run'},processId:'synthetic-process',emit:async row => {
+      if (row.outcome !== 'open') return;
+      if (row.phase === 'form_observation') observations++;
+      if (!paused && row.phase === desired && (target !== 'readback observation' || observations === 2)) {
+        paused = true;
+        before = [...calls];
+        // Yield to a control change while the durable reservation is in flight.
+        await new Promise(resolve => setImmediate(() => { stopped = true; resolve(); }));
+      }
+    }});
+    const result = await forms.execute(forms.plan(input),fake.adapter,{telemetry,guard:async () => !stopped,
+      resumeResolver:async () => {calls.push('resolve');return clone(resume);},
+      resumeVerifier:async () => {calls.push('verify');return true;},
+      rememberResume:async () => {calls.push('remember');return true;}});
+    assert.equal(paused,true);
+    assert.equal(result.reason,'guard_refused');
+    assert.deepEqual(calls,before,'no adapter/resolver/receipt operation may run after STOP');
+  });
+}

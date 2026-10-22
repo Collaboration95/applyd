@@ -1,11 +1,13 @@
 """Synthetic end-to-end parent hooks; no real browser or applications."""
 import argparse
+from datetime import timedelta
 from pathlib import Path
 import subprocess
 import sys
 import unittest
 import test_workflow as fixtures
 import workspace as w
+import spans
 from runner import Kind, Observation
 from runner_workspace import build_runner
 
@@ -36,9 +38,12 @@ class RunnerWorkspaceTests(unittest.TestCase):
 
     def test_fixture_prepare_review_confirm_restart_quota_and_no_second_click(self):
         self.initialize();outer=self
+        seconds = [0]
         class Adapter:
             clicks=0
-            def observe_url(self,action):return outer.record(action.application_id)['listing_url']
+            def observe_url(self,action):
+                seconds[0] += 2
+                return outer.record(action.application_id)['listing_url']
             def __call__(self,action):
                 app=action.application_id
                 if action.kind==Kind.PREPARE:
@@ -53,10 +58,19 @@ class RunnerWorkspaceTests(unittest.TestCase):
                     args=argparse.Namespace(id=app,status='submitted',note='',resume_scope=None,answers=None,evidence=outer.evidence())
                     w.event(outer.root,args,outer.now,deferred=True)
                 return Observation()
-        adapter=Adapter();controller=build_runner(self.root,'fixture-run',self.brief,adapter)
-        results=controller.execute(clock=lambda:self.now,max_steps=5)
+        adapter=Adapter();controller=build_runner(self.root,'fixture-run',self.brief,adapter,monotonic=lambda:seconds[0])
+        results=controller.execute(clock=lambda:self.now+timedelta(seconds=seconds[0]),max_steps=5)
         self.assertEqual([x.kind for x in results],[Kind.PREPARE,Kind.REVIEW,Kind.SUBMIT,Kind.COMPLETE])
         self.assertEqual(adapter.clicks,1)
+        rows = spans.load(self.root)
+        observed = [r for r in rows if r['phase']=='preflight' and r['channel']=='browser']
+        self.assertEqual(len(observed),1)
+        self.assertEqual(observed[0]['duration_seconds'],2)
+        self.assertEqual(observed[0]['application_id'],self.app)
+        self.assertIsNotNone(observed[0]['attempt_id'])
+        self.assertIsNotNone(observed[0]['parent_id'])
+        summary = spans.summarize(w.records(self.root), rows)
+        self.assertEqual(summary['critical_path_active_seconds'],2)
         resumed=build_runner(self.root,'fixture-run',self.brief,adapter)
         self.assertEqual(resumed.execute(clock=lambda:self.now)[0].kind,Kind.COMPLETE)
         self.assertEqual(adapter.clicks,1)

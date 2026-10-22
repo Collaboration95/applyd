@@ -1,54 +1,73 @@
 {
   "after": {
-    "exports": 1,
+    "clicks": 1,
+    "confirmations_per_measured_active_hour": 1326.944342,
+    "confirmations_per_wall_hour": 1326.944342,
+    "elapsed_seconds": 2.714,
+    "export_clean": true,
+    "exports": 2,
     "field_writes": 1,
-    "observations": 3,
+    "imported_form_spans": 13,
+    "measured_active_seconds": 2.713,
+    "measured_spans": 142,
+    "observations": 4,
     "path_entries": 0,
-    "record_snapshot_reads": 2,
-    "seconds": 0.9,
+    "record_reads": 73,
     "skipped_fields": 2,
-    "telemetry_emissions": 0,
-    "uploads": 0
+    "telemetry_persistence_calls": 284,
+    "time_to_first_confirmation_seconds": 2.399,
+    "unique_confirmations": 1,
+    "uploads": 0,
+    "wall_run_seconds": 2.713,
+    "workflow_completed": true
   },
-  "after_form_latency": {
-    "median_seconds": 0.9,
-    "p95_seconds": 0.9,
+  "after_workflow_latency": {
+    "median_seconds": 2.714,
+    "p95_seconds": 2.714,
     "samples": 1
   },
   "before": {
-    "exports": 3,
+    "clicks": 1,
+    "confirmations_per_measured_active_hour": 563.468461,
+    "confirmations_per_wall_hour": 563.468461,
+    "elapsed_seconds": 6.39,
+    "export_clean": true,
+    "exports": 5,
     "field_writes": 3,
-    "observations": 10,
+    "imported_form_spans": 20,
+    "measured_active_seconds": 6.389,
+    "measured_spans": 200,
+    "observations": 11,
     "path_entries": 1,
-    "record_snapshot_reads": 6,
-    "seconds": 3.8,
+    "record_reads": 109,
     "skipped_fields": 0,
-    "telemetry_emissions": 0,
-    "uploads": 1
+    "telemetry_persistence_calls": 400,
+    "time_to_first_confirmation_seconds": 6.051,
+    "unique_confirmations": 1,
+    "uploads": 1,
+    "wall_run_seconds": 6.389,
+    "workflow_completed": true
   },
-  "before_form_latency": {
-    "median_seconds": 3.8,
-    "p95_seconds": 3.8,
+  "before_workflow_latency": {
+    "median_seconds": 6.39,
+    "p95_seconds": 6.39,
     "samples": 1
   },
-  "clock": "fake; observation=0.2s, field_write=0.3s, upload_and_path=0.9s, telemetry_emit=0.001s",
-  "confirmation_evidence": "none; no submit operation exists in this fixture",
-  "confirmations_per_measured_active_hour": 0,
-  "confirmations_per_wall_hour": 0,
-  "fixture": "synthetic-four-field-one-mismatch-v1",
-  "instrumentation_emissions": 24,
-  "instrumentation_overhead_seconds": 0.024,
-  "latency_samples_per_variant": 1,
-  "latency_scope": "form-step only; record/export counts are separate untimed actual calls",
-  "live_speedup": null,
-  "model_configuration": "none; no model calls in either variant",
-  "schema_version": 1,
-  "throughput_denominators": {
-    "after_measured_active_seconds": 0.9,
-    "after_wall_seconds": 0.9,
-    "before_measured_active_seconds": 3.8,
-    "before_wall_seconds": 3.8
+  "clock": "fake; observation=0.2s, field_write=0.3s, upload_and_path=0.9s, record_read=0.01s, export=0.1s, durable_span_save=0.001s",
+  "confirmation_evidence": "local synthetic confirmation via real submit-intent, event and verification flow; no live submission",
+  "fixture": "connected-synthetic-four-field-one-mismatch-v2",
+  "instrumentation_overhead_seconds": {
+    "after": 0.284,
+    "before": 0.4
   },
-  "time_to_first_confirmation_seconds": null,
-  "unique_confirmations": 0
+  "latency_samples_per_variant": 1,
+  "latency_scope": "connected Runner.execute through bounded checkpoint; all record reads, exports, guarded form RPC and JS span ingestion included",
+  "live_speedup": null,
+  "model_configuration": "none; identical fixture and no model calls in every variant",
+  "paired_without_telemetry": {
+    "after_elapsed_seconds": 2.43,
+    "before_elapsed_seconds": 5.99
+  },
+  "reference": "frozen unconditional form schedule plus uncached planning and immediate mutation exports; same current safety, readback, receipt, independent review and submit gates",
+  "schema_version": 2
 }

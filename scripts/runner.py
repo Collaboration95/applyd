@@ -97,7 +97,7 @@ class Runner:
         self.root = Path(root).resolve()
         self.run_id, self.hooks, self.adapter = run_id, hooks, adapter
         self.monotonic = monotonic if monotonic is not None else time.monotonic
-        self.telemetry = spans.Recorder(self.root, run_id)
+        self.telemetry = spans.Recorder(self.root, run_id, monotonic=self.monotonic)
         self.export_outcome = None
         self.state_ref = f"applications/runs/{run_id}/state.json"
 
@@ -375,6 +375,28 @@ class Runner:
         """At most max_steps adapter calls, serialized through the parent's writer."""
         if type(max_steps) is not int or not 0 <= max_steps <= 100:
             raise ValueError("max_steps must be an integer from 0 to 100")
+        if self.hooks is None:
+            return self._execute_steps(clock=clock, max_steps=max_steps)
+        self.telemetry.wall = clock
+        self.telemetry.application_id = self.telemetry.attempt_id = self.telemetry.action_id = None
+        # Reserve/complete under the writer without holding it between actions.
+        # The envelope includes the final bounded export on success, STOP or error.
+        with self.telemetry.span("workflow", "orchestration", writer=self.hooks.writer):
+            try:
+                return self._execute_steps(clock=clock, max_steps=max_steps)
+            finally:
+                if self.hooks.checkpoint is not None:
+                    with self.hooks.writer(), self.telemetry.span("export") as row:
+                        try:
+                            self.export_outcome = self.hooks.checkpoint()
+                        except Exception:
+                            # Derived export failure cannot replace a durable
+                            # action result or trigger replay; recovery owns it.
+                            self.export_outcome = {"ok": False, "status": "failed"}
+                            if row is not None:
+                                row["outcome"] = "failed"
+
+    def _execute_steps(self, *, clock, max_steps):
         results = []
         for _ in range(max_steps):
             now = batches.validate_event_time(clock())
@@ -383,7 +405,7 @@ class Runner:
                 break
             self.telemetry.wall = clock
             self.telemetry.application_id = self.telemetry.attempt_id = self.telemetry.action_id = None
-            with self.hooks.writer(), self.telemetry.span("workflow", "orchestration"):
+            with self.hooks.writer():
                 state, action = self._next(now)
                 self.telemetry.correlate(action)
                 if action.kind in {Kind.COMPLETE, Kind.HANDOFF}:
@@ -428,6 +450,7 @@ class Runner:
                 failure_reported = False
                 reason = retry_policy.Reason.SUBMISSION_UNCERTAIN if action.kind == Kind.SUBMIT else retry_policy.Reason.UNSUPPORTED
                 try:
+                    self.telemetry.correlate(action, ((record or {}).get("prepared") or {}).get("attempt_id"))
                     self._metric(metrics.reserve, self.root, self.run_id, action.sequence, action.kind.value,
                         action.application_id, now, retry_reason=retry_reason if retry_count else None,
                         retry_count=retry_count)
@@ -442,7 +465,6 @@ class Runner:
                         self._boundary(state, action, now, begun=True)
                     started = self.monotonic()
                     try:
-                        self.telemetry.correlate(action, ((record or {}).get("prepared") or {}).get("attempt_id"))
                         if retry_count:
                             with spans.span("retry", counters={"retries": 1}):
                                 observation = spans.LiveAdapter(self.adapter)(action)
@@ -485,7 +507,4 @@ class Runner:
                     "unverified_action" if verified == "unresolved" else "not_executed"))
                 if verified != "verified":
                     break
-        if self.hooks is not None and self.hooks.checkpoint is not None:
-            with self.hooks.writer(), self.telemetry.span("export"):
-                self.export_outcome = self.hooks.checkpoint()
         return results
